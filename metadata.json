@@ -1,0 +1,6 @@
+{
+  "name": "Sequenciador Gantt de Multiplicação Bacteriana",
+  "description": "Sistema de Planejamento e Controle de Produção (PCP) e cronograma visual de Gantt para automação e sequenciamento de lotes de multiplicação bacteriana.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

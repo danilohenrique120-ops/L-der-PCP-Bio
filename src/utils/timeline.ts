@@ -1,0 +1,567 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { ProductRecipe, ScheduledStep, ASSETS_POOL, Batch, Preventative, ScaleType, Asset, ShiftConfig, PlanningErrorLog, getAssetsPool, normalizeAssetId } from '../types';
+
+/**
+ * Checks if two date range intervals overlap
+ */
+export function areIntervalsOverlapping(
+  start1: Date | string,
+  end1: Date | string,
+  start2: Date | string,
+  end2: Date | string
+): boolean {
+  const s1 = new Date(start1).getTime();
+  const e1 = new Date(end1).getTime();
+  const s2 = new Date(start2).getTime();
+  const e2 = new Date(end2).getTime();
+
+  return s1 < e2 && s2 < e1;
+}
+
+/**
+ * Finds the first asset of a given ScaleType that has NO scheduling overlaps
+ * with any existing batches or preventatives during the specified timeframe (including setup/preparation times).
+ * If all assets are busy, returns the first asset of that type and flags it.
+ */
+export function findFirstAvailableAsset(
+  scaleType: ScaleType,
+  start: Date | string,
+  end: Date | string,
+  existingBatches: Batch[],
+  preventatives: Preventative[],
+  ignoreBatchId?: string,
+  setupTimes?: Record<ScaleType, number>,
+  envaseLinesCount?: number
+): { asset: Asset; hasConflict: boolean } {
+  const envaseCount = envaseLinesCount || 3;
+  const compatibleAssets = getAssetsPool(envaseCount).filter(a => a.scaleType === scaleType);
+  if (compatibleAssets.length === 0) {
+    throw new Error(`Nenhum ativo configurado para a escala: ${scaleType}`);
+  }
+
+  const s1 = new Date(start).getTime();
+  const e1 = new Date(end).getTime();
+  const setup1 = setupTimes ? (setupTimes[scaleType] || 0) : 0;
+  const e1Setup = e1 + setup1 * 60 * 60 * 1000;
+
+  for (const asset of compatibleAssets) {
+    let hasOverlap = false;
+
+    // Check overlaps with other batches taking setup times into account
+    for (const batch of existingBatches) {
+      if (batch.id === ignoreBatchId) continue;
+      for (const step of batch.steps) {
+        if (normalizeAssetId(step.assetId, envaseCount) === asset.id) {
+          const s2 = new Date(step.startDateTime).getTime();
+          const e2 = new Date(step.endDateTime).getTime();
+          const setup2 = setupTimes ? (setupTimes[step.scaleType] || 0) : 0;
+          const e2Setup = e2 + setup2 * 60 * 60 * 1000;
+
+          // Symmetrical overlap check incorporating execution and setup times
+          if (s1 < e2Setup && s2 < e1Setup) {
+            hasOverlap = true;
+            break;
+          }
+        }
+      }
+      if (hasOverlap) break;
+    }
+
+    if (!hasOverlap) {
+      // Check overlaps with preventatives (preventatives don't have secondary setups,
+      // but they cannot overlap with the step execution or step setup)
+      for (const prev of preventatives) {
+        if (normalizeAssetId(prev.assetId, envaseCount) === asset.id) {
+          const pStart = new Date(prev.startDateTime).getTime();
+          const pEnd = new Date(prev.endDateTime).getTime();
+
+          if (s1 < pEnd && pStart < e1Setup) {
+            hasOverlap = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!hasOverlap) {
+      // Found a completely free asset
+      return { asset, hasConflict: false };
+    }
+  }
+
+  // Fallback: search was unsuccessful, return the first one but with conflict flag true
+  return { asset: compatibleAssets[0], hasConflict: true };
+}
+
+/**
+ * Calculates a complete batch timeline based on product recipe and start time.
+ * If autoAllocate is true, it queries existing list of scheduled batches to find free assets.
+ * Otherwise, it can take manual step allocations.
+ */
+export function calculateProductionTimeline(
+  recipe: ProductRecipe,
+  startDateTimeStr: string,
+  transferIntervalHours: number,
+  existingBatches: Batch[],
+  preventatives: Preventative[],
+  manualAllocations?: Record<string, string>, // stepIndex -> assetId
+  ignoreBatchId?: string,
+  setupTimes?: Record<ScaleType, number>,
+  envaseLinesCount?: number
+): ScheduledStep[] {
+  const envaseCount = envaseLinesCount || 3;
+  const steps: ScheduledStep[] = [];
+  let currentStart = new Date(startDateTimeStr);
+
+  for (let idx = 0; idx < recipe.steps.length; idx++) {
+    const stepDef = recipe.steps[idx];
+    const durationHours = stepDef.durationHours;
+    
+    // Calculate end date
+    const currentEnd = new Date(currentStart.getTime() + durationHours * 60 * 60 * 1000);
+
+    let finalAssetId = '';
+    
+    if (manualAllocations && manualAllocations[idx]) {
+      finalAssetId = normalizeAssetId(manualAllocations[idx], envaseCount);
+    } else {
+      // Find available asset automatically
+      const { asset } = findFirstAvailableAsset(
+        stepDef.scaleType,
+        currentStart,
+        currentEnd,
+        existingBatches,
+        preventatives,
+        ignoreBatchId,
+        setupTimes,
+        envaseCount
+      );
+      finalAssetId = asset.id;
+    }
+
+    steps.push({
+      scaleType: stepDef.scaleType,
+      durationHours,
+      startDateTime: currentStart.toISOString(),
+      endDateTime: currentEnd.toISOString(),
+      assetId: finalAssetId
+    });
+
+    // Next step starts after the end of the current step + transfer interval
+    currentStart = new Date(currentEnd.getTime() + transferIntervalHours * 60 * 60 * 1000);
+  }
+
+  return steps;
+}
+
+/**
+ * Parses and formats dates for display
+ */
+export function formatFullDate(isoString: string): string {
+  if (!isoString) return '';
+  const date = new Date(isoString);
+  return date.toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+export function formatShortDate(isoString: string): string {
+  if (!isoString) return '';
+  const date = new Date(isoString);
+  return date.toLocaleDateString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit'
+  }) + ' ' + date.toLocaleTimeString('pt-BR', {
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+}
+
+/**
+ * Calculates ISO week number and year
+ */
+export function getWeekNumber(d: Date): { week: number; year: number } {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dayNum = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return { week: weekNo, year: date.getUTCFullYear() };
+}
+
+export function parseTimeToMinutes(timeStr: string): number {
+  if (!timeStr) return 0;
+  const [h, m] = timeStr.split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+
+export function isDateTimeInWorkingHours(dateTime: Date | string, config: ShiftConfig): boolean {
+  const date = new Date(dateTime);
+  const day = date.getDay();
+  const minutes = date.getHours() * 60 + date.getMinutes();
+  
+  const shifts = config?.shifts || [];
+  if (shifts.length === 0) {
+    return true; // No shifts configured is a fallback
+  }
+  
+  return shifts.some(sh => {
+    if (!sh.workDays.includes(day)) {
+      return false;
+    }
+    const startMin = parseTimeToMinutes(sh.startHour);
+    const endMin = parseTimeToMinutes(sh.endHour);
+    return minutes >= startMin && minutes <= endMin;
+  });
+}
+
+export function getDayName(day: number): string {
+  const days = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+  return days[day] || '';
+}
+
+export function validateBatchShifts(
+  steps: ScheduledStep[],
+  shiftConfig: ShiftConfig
+): { isValid: boolean; reason?: string; failedStep?: string; failedTime?: string } {
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    
+    // Inoculação / Scale transfer start
+    if (!isDateTimeInWorkingHours(step.startDateTime, shiftConfig)) {
+      const operationName = i === 0 ? "Inoculação" : `Trf. para ${step.scaleType}`;
+      return {
+        isValid: false,
+        failedStep: step.scaleType,
+        failedTime: step.startDateTime,
+        reason: `${operationName} em ${formatFullDate(step.startDateTime)} (${getDayName(new Date(step.startDateTime).getDay())}) caiu fora de todos os turnos de trabalho ativos.`
+      };
+    }
+    
+    // Transfer / Envase (scale end)
+    if (!isDateTimeInWorkingHours(step.endDateTime, shiftConfig)) {
+      const operationName = i === steps.length - 1 ? "Envase (Quality)" : `Trf. de ${step.scaleType}`;
+      return {
+        isValid: false,
+        failedStep: step.scaleType,
+        failedTime: step.endDateTime,
+        reason: `${operationName} em ${formatFullDate(step.endDateTime)} (${getDayName(new Date(step.endDateTime).getDay())}) caiu fora de todos os turnos de trabalho ativos.`
+      };
+    }
+  }
+  return { isValid: true };
+}
+
+export interface ScheduleAttemptResult {
+  success: boolean;
+  steps: ScheduledStep[];
+  startDateTime: string;
+  errorReason?: string;
+}
+
+/**
+ * Checks if a proposed set of scheduled steps conflicts with any existing batches or preventatives, implementing setup times.
+ */
+export function checkStepsOverlap(
+  steps: ScheduledStep[],
+  existingBatches: Batch[],
+  preventatives: Preventative[],
+  ignoreBatchId?: string,
+  setupTimes?: Record<ScaleType, number>,
+  envaseLinesCount?: number
+): boolean {
+  const envaseCount = envaseLinesCount || 3;
+  for (const step of steps) {
+    const s1 = new Date(step.startDateTime).getTime();
+    const e1 = new Date(step.endDateTime).getTime();
+    const setup1 = setupTimes ? (setupTimes[step.scaleType] || 0) : 0;
+    const e1Setup = e1 + setup1 * 60 * 60 * 1000;
+    const stepAssetId = normalizeAssetId(step.assetId, envaseCount);
+
+    // Overlap with preventatives
+    const isBlockPrev = preventatives.some(p => {
+      if (normalizeAssetId(p.assetId, envaseCount) !== stepAssetId) return false;
+      const pStart = new Date(p.startDateTime).getTime();
+      const pEnd = new Date(p.endDateTime).getTime();
+      return s1 < pEnd && pStart < e1Setup;
+    });
+    if (isBlockPrev) return true;
+
+    // Overlap with other batches
+    const isBlockBatch = existingBatches.some(b => {
+      if (b.id === ignoreBatchId) return false;
+      return b.steps.some(st => {
+        if (normalizeAssetId(st.assetId, envaseCount) !== stepAssetId) return false;
+        const s2 = new Date(st.startDateTime).getTime();
+        const e2 = new Date(st.endDateTime).getTime();
+        const setup2 = setupTimes ? (setupTimes[st.scaleType] || 0) : 0;
+        const e2Setup = e2 + setup2 * 60 * 60 * 1000;
+        return s1 < e2Setup && s2 < e1Setup;
+      });
+    });
+    if (isBlockBatch) return true;
+  }
+  return false;
+}
+
+/**
+ * Attempts to schedule a batch starting from a preferred date.
+ * If shifts or assets conflict, it tries backward scheduling (shifting start time earlier hour-by-hour) up to 168 hours (7 days).
+ */
+export function tryScheduleBatchBackward(
+  recipe: ProductRecipe,
+  preferredStartStr: string,
+  transferIntervalHours: number,
+  existingBatches: Batch[],
+  preventatives: Preventative[],
+  shiftConfig: ShiftConfig,
+  manualAllocations?: Record<string, string>,
+  ignoreBatchId?: string,
+  setupTimes?: Record<ScaleType, number>,
+  envaseLinesCount?: number
+): ScheduleAttemptResult {
+  const envaseCount = envaseLinesCount || 3;
+  const preferredStart = new Date(preferredStartStr);
+  let initialErrorReason = '';
+
+  // 1. Initial direct forward check
+  let initialSteps: ScheduledStep[] = [];
+  try {
+    initialSteps = calculateProductionTimeline(
+      recipe,
+      preferredStartStr,
+      transferIntervalHours,
+      existingBatches,
+      preventatives,
+      manualAllocations,
+      ignoreBatchId,
+      setupTimes,
+      envaseCount
+    );
+  } catch (err: any) {
+    return {
+      success: false,
+      steps: [],
+      startDateTime: preferredStartStr,
+      errorReason: err.message || 'Erro ao mapear rota de reatores para o lote.'
+    };
+  }
+
+  const shiftVal = validateBatchShifts(initialSteps, shiftConfig);
+  const overlapsVal = checkStepsOverlap(initialSteps, existingBatches, preventatives, ignoreBatchId, setupTimes, envaseCount);
+
+  if (shiftVal.isValid && !overlapsVal) {
+    return {
+      success: true,
+      steps: initialSteps,
+      startDateTime: preferredStartStr
+    };
+  }
+
+  if (!shiftVal.isValid) {
+    initialErrorReason = shiftVal.reason || '';
+  } else {
+    initialErrorReason = 'Tempo coincide de forma conflitante com Manutenção Preventiva ou outro lote ativo (incluindo tempo de setup/higienização).';
+  }
+
+  // 2. BACKWARD SCHEDULING - Search up to 168 hours backward
+  for (let hoursBack = 1; hoursBack <= 168; hoursBack++) {
+    const testStart = new Date(preferredStart.getTime() - hoursBack * 60 * 60 * 1000);
+    try {
+      const backwardSteps = calculateProductionTimeline(
+        recipe,
+        testStart.toISOString(),
+        transferIntervalHours,
+        existingBatches,
+        preventatives,
+        manualAllocations,
+        ignoreBatchId,
+        setupTimes,
+        envaseCount
+      );
+
+      const testShiftVal = validateBatchShifts(backwardSteps, shiftConfig);
+      const testOverlap = checkStepsOverlap(backwardSteps, existingBatches, preventatives, ignoreBatchId, setupTimes, envaseCount);
+
+      if (testShiftVal.isValid && !testOverlap) {
+        return {
+          success: true,
+          steps: backwardSteps,
+          startDateTime: testStart.toISOString()
+        };
+      }
+    } catch {
+      // Keep searching
+    }
+  }
+
+  // 3. FORWARD SCHEDULING - Try to search forward as fallback (up to 7 days) if backward didn't work
+  for (let hoursForward = 1; hoursForward <= 168; hoursForward++) {
+    const testStart = new Date(preferredStart.getTime() + hoursForward * 60 * 60 * 1000);
+    try {
+      const forwardSteps = calculateProductionTimeline(
+        recipe,
+        testStart.toISOString(),
+        transferIntervalHours,
+        existingBatches,
+        preventatives,
+        manualAllocations,
+        ignoreBatchId,
+        setupTimes,
+        envaseCount
+      );
+
+      const testShiftVal = validateBatchShifts(forwardSteps, shiftConfig);
+      const testOverlap = checkStepsOverlap(forwardSteps, existingBatches, preventatives, ignoreBatchId, setupTimes, envaseCount);
+
+      if (testShiftVal.isValid && !testOverlap) {
+        return {
+          success: true,
+          steps: forwardSteps,
+          startDateTime: testStart.toISOString()
+        };
+      }
+    } catch {
+      // Keep searching
+    }
+  }
+
+  return {
+    success: false,
+    steps: [],
+    startDateTime: preferredStartStr,
+    errorReason: `Falha ao programar lote devido a restrição de turnos ou colisão física. Detalhes: ${initialErrorReason}`
+  };
+}
+
+/**
+ * Automatically plans and schedules several batches to meet a production volume goal, taking setup blocks and dynamic envaser count into parallel allocation.
+ */
+export function generateAutomaticPlanning(
+  recipe: ProductRecipe,
+  targetVolume: number,
+  startDateStr: string,
+  existingBatches: Batch[],
+  preventatives: Preventative[],
+  shiftConfig: ShiftConfig,
+  setupTimes?: Record<ScaleType, number>,
+  envaseLinesCount?: number
+): {
+  scheduledBatches: Batch[];
+  errors: PlanningErrorLog[];
+} {
+  const envaseCount = envaseLinesCount || 3;
+  const scheduledBatches: Batch[] = [];
+  const errors: PlanningErrorLog[] = [];
+  
+  const batchesNeeded = Math.ceil(targetVolume / recipe.yieldPerBatch);
+  if (batchesNeeded <= 0) {
+    return { scheduledBatches, errors };
+  }
+
+  // Create active pool copying existing schedule
+  const activeBatchesPool = [...existingBatches];
+  const currentSearchStart = new Date(startDateStr);
+
+  for (let lotIdx = 0; lotIdx < batchesNeeded; lotIdx++) {
+    const lotNumber = `${recipe.name.substring(0, 3).toUpperCase()}-L${String(1000 + lotIdx + 1).substring(1)}`;
+    let lotScheduled = false;
+
+    // Scan forward hour-by-hour (up to 45 days = 1080 hours) to see where this batch can be allocated
+    const scanLimitHours = 1080; 
+    let foundPerfectStart = '';
+    let foundPerfectSteps: ScheduledStep[] = [];
+
+    let foundBypassStart = '';
+    let foundBypassSteps: ScheduledStep[] = [];
+    let bypassReason = '';
+
+    for (let offset = 0; offset <= scanLimitHours; offset++) {
+      const testStart = new Date(currentSearchStart.getTime() + offset * 60 * 60 * 1000);
+      
+      try {
+        const candidateSteps = calculateProductionTimeline(
+          recipe,
+          testStart.toISOString(),
+          0, // 0h standard interval for auto batches
+          activeBatchesPool,
+          preventatives,
+          undefined, // manualAllocations
+          undefined, // ignoreBatchId
+          setupTimes,
+          envaseCount
+        );
+
+        const hasOverlap = checkStepsOverlap(candidateSteps, activeBatchesPool, preventatives, undefined, setupTimes, envaseCount);
+        if (hasOverlap) {
+          continue; // Physical collision on reactor/preventatives is strictly forbidden
+        }
+
+        const shiftVal = validateBatchShifts(candidateSteps, shiftConfig);
+        if (shiftVal.isValid) {
+          foundPerfectStart = testStart.toISOString();
+          foundPerfectSteps = candidateSteps;
+          lotScheduled = true;
+          break;
+        } else {
+          // If we haven't found a bypass start yet, save the first physical-safe but shift-invalid slot
+          if (!foundBypassStart) {
+            foundBypassStart = testStart.toISOString();
+            foundBypassSteps = candidateSteps;
+            bypassReason = shiftVal.reason || 'Conflito de turnos.';
+          }
+        }
+      } catch (err: any) {
+        // Rota mapping issue, seek next hour
+      }
+    }
+
+    if (lotScheduled && foundPerfectStart && foundPerfectSteps.length > 0) {
+      const newBatch: Batch = {
+        id: `auto-batch-${recipe.id}-${Date.now()}-${lotIdx}`,
+        lotNumber,
+        productId: recipe.id,
+        startDateTime: foundPerfectStart,
+        transferIntervalHours: 0,
+        steps: foundPerfectSteps
+      };
+      
+      scheduledBatches.push(newBatch);
+      activeBatchesPool.push(newBatch);
+    } else if (foundBypassStart && foundBypassSteps.length > 0) {
+      // It is physical-safe but failed shifts -> present as bypassable "Horas Extras" warning!
+      errors.push({
+        id: `err-bypass-${recipe.id}-${Date.now()}-${lotIdx}`,
+        lotNumber,
+        productName: recipe.name,
+        timestamp: new Date().toISOString(),
+        reason: `Cairia fora do turno de trabalho operacional. ${bypassReason}`,
+        productId: recipe.id,
+        startDateTime: foundBypassStart,
+        canBypass: true
+      });
+    } else {
+      errors.push({
+        id: `err-absolute-${recipe.id}-${Date.now()}-${lotIdx}`,
+        lotNumber,
+        productName: recipe.name,
+        timestamp: new Date().toISOString(),
+        reason: `Lote ${lotNumber} totalmente inviabilizado: Sem reatores ou rota física livre no período analisado (incluindo setup).`,
+        canBypass: false
+      });
+    }
+  }
+
+  return {
+    scheduledBatches,
+    errors
+  };
+}
