@@ -32,9 +32,7 @@ const CATEGORIES = [
 
 export default function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDeletePreventative, onUpdateBatches, onAddDeviationLog, setupTimes, envaseLinesCount }: GanttTimelineProps) {
   const assetsList = getAssetsPool(envaseLinesCount);
-  // Start date of the timeline. Default to June 1st, 2026 (the start of Week 23)
-  const [baseDate, setBaseDate] = useState<Date>(new Date('2026-06-01T00:00:00'));
-  const [viewportDays, setViewportDays] = useState<number>(21); // Display 3 weeks by default
+  const [activeMonth, setActiveMonth] = useState<number>(5); // Default to June (index 5)
   const [viewMode, setViewMode] = useState<'days' | 'weeks'>('days');
   const [now, setNow] = useState<Date>(new Date());
 
@@ -78,18 +76,16 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
   };
 
   const handleSelectMonth = (monthIdx: number) => {
-    const newDate = new Date(2026, monthIdx, 1, 0, 0, 0);
-    setBaseDate(newDate);
+    setActiveMonth(monthIdx);
+    scrollToDate(new Date(2026, monthIdx, 1), 'smooth');
   };
 
   const handleSwitchViewMode = (mode: 'days' | 'weeks') => {
     setViewMode(mode);
     if (mode === 'days') {
       setZoomLevel(120); // standard spacing
-      setViewportDays(14); // 2 weeks default for days
     } else {
       setZoomLevel(50); // zoomed out spacing for weeks
-      setViewportDays(42); // 6 weeks default for weeks view
     }
   };
 
@@ -325,20 +321,17 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
   const dayWidth = zoomLevel; 
   const hourWidth = dayWidth / 24;
 
+  const timelineStart = new Date('2026-01-01T00:00:00');
+  const timelineEnd = new Date('2026-12-31T23:59:59');
+  const totalDays = 365;
+
   // Calculate list of days in the active viewport range
   const daysArray: Date[] = [];
-  for (let i = 0; i < viewportDays; i++) {
-    const d = new Date(baseDate);
-    d.setDate(baseDate.getDate() + i);
+  for (let i = 0; i < totalDays; i++) {
+    const d = new Date(timelineStart);
+    d.setDate(timelineStart.getDate() + i);
     daysArray.push(d);
   }
-
-  const timelineStart = new Date(baseDate);
-  timelineStart.setHours(0, 0, 0, 0);
-
-  const timelineEnd = new Date(baseDate);
-  timelineEnd.setDate(baseDate.getDate() + viewportDays);
-  timelineEnd.setHours(23, 59, 59, 999);
 
   // Group days by Sunday/Monday week descriptors
   const weeksMap: Record<string, { weekNum: number; days: Date[] }> = {};
@@ -351,17 +344,44 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
     weeksMap[key].days.push(day);
   });
 
-  // Time navigation
+  const scrollToDate = (date: Date, behavior: ScrollBehavior = 'smooth') => {
+    if (timelineContentRef.current) {
+      const diffTime = date.getTime() - timelineStart.getTime();
+      const diffDays = diffTime / (1000 * 60 * 60 * 24);
+      const scrollLeft = diffDays * dayWidth;
+      timelineContentRef.current.scrollTo({ left: scrollLeft, behavior });
+    }
+  };
+
+  // Automatically scroll to the active month when mounting or changing zoom level
+  useEffect(() => {
+    scrollToDate(new Date(2026, activeMonth, 1), 'auto');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoomLevel]);
+
+  // Listen to scroll to update active month
+  const handleScroll = () => {
+    if (timelineContentRef.current) {
+      const scrollLeft = timelineContentRef.current.scrollLeft;
+      const scrollDays = scrollLeft / dayWidth;
+      const currentDate = new Date(timelineStart.getTime() + scrollDays * 24 * 60 * 60 * 1000);
+      const currentMonth = currentDate.getMonth();
+      if (activeMonth !== currentMonth) {
+        setActiveMonth(currentMonth);
+      }
+    }
+  };
+
+  // Time navigation via scrolling
   const navigateTimeline = (direction: 'next' | 'prev') => {
-    const offsetFactor = viewMode === 'weeks' ? 14 : 7;
-    const offset = direction === 'next' ? offsetFactor : -offsetFactor;
-    const nextDate = new Date(baseDate);
-    nextDate.setDate(baseDate.getDate() + offset);
-    setBaseDate(nextDate);
+    if (timelineContentRef.current) {
+      const scrollAmount = direction === 'next' ? 7 * dayWidth : -7 * dayWidth;
+      timelineContentRef.current.scrollBy({ left: scrollAmount, behavior: 'smooth' });
+    }
   };
 
   const handleResetToJune = () => {
-    setBaseDate(new Date('2026-06-01T00:00:00'));
+    handleSelectMonth(5); // June is index 5
   };
 
   // Determine if today's date context is visible
@@ -513,29 +533,10 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
             </button>
           </div>
 
-          <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-lg border border-slate-200">
-            <span className="text-[9px] font-bold text-slate-400 uppercase px-1">Escopo:</span>
-            <select
-              value={viewportDays}
-              onChange={(e) => setViewportDays(parseInt(e.target.value))}
-              className="px-2 py-1 border-0 bg-transparent text-xs font-bold text-slate-700 focus:outline-none cursor-pointer"
-            >
-              {viewMode === 'days' ? (
-                <>
-                  <option value={7}>1 Semana (7 dias)</option>
-                  <option value={14}>2 Semanas (14 dias)</option>
-                  <option value={21}>3 Semanas (21 dias)</option>
-                  <option value={28}>4 Semanas (28 dias)</option>
-                </>
-              ) : (
-                <>
-                  <option value={28}>4 Semanas (28 dias)</option>
-                  <option value={42}>6 Semanas (42 dias)</option>
-                  <option value={56}>8 Semanas (56 dias)</option>
-                  <option value={84}>12 Semanas (84 dias)</option>
-                </>
-              )}
-            </select>
+          <div className="flex items-center bg-slate-50 p-1 rounded-lg border border-slate-200">
+            <span className="text-[9px] font-bold text-slate-500 uppercase px-2 py-1 select-none">
+              Safra Completa (2026)
+            </span>
           </div>
         </div>
       </div>
@@ -557,7 +558,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
         <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-12 gap-1.5">
           {MONTHS_PT.map((mName, mIdx) => {
             const stats = getMonthlyStats(mIdx);
-            const isSelected = baseDate.getMonth() === mIdx && baseDate.getFullYear() === 2026;
+            const isSelected = activeMonth === mIdx;
             
             // Highlight months that actually have batches or preventatives scheduled
             const hasActivity = stats.batchesCount > 0 || stats.prevCount > 0;
@@ -652,9 +653,10 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
             ref={timelineContentRef} 
             className="flex-1 overflow-x-auto relative" 
             id="gantt-timeline-scroller"
+            onScroll={handleScroll}
           >
             {/* TIMELINE HEADERS */}
-            <div className="sticky top-0 z-20 bg-white border-b border-slate-200 shadow-2xs select-none" style={{ width: `${viewportDays * dayWidth}px` }}>
+            <div className="sticky top-0 z-20 bg-white border-b border-slate-200 shadow-2xs select-none" style={{ width: `${totalDays * dayWidth}px` }}>
               {/* Row 1: Weeks */}
               <div className="flex h-8 bg-slate-900 border-b border-slate-800">
                 {Object.entries(weeksMap).map(([key, value]) => {
@@ -704,7 +706,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
             {/* GRID CANVAS & BLOCKS */}
             <div 
               className="relative divide-y divide-slate-200/80 bg-slate-100" 
-              style={{ width: `${viewportDays * dayWidth}px` }}
+              style={{ width: `${totalDays * dayWidth}px` }}
               id="gantt-rows-container"
             >
               {/* Draw Vertical shading guidelines for weekend columns and calendar days */}
