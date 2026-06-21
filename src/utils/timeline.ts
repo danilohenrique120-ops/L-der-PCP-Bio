@@ -445,6 +445,27 @@ export function tryScheduleBatchBackward(
 /**
  * Automatically plans and schedules several batches to meet a production volume goal, taking setup blocks and dynamic envaser count into parallel allocation.
  */
+/**
+ * Calculates the inoculation (Erlenmeyer start) date based on a target Envase start date
+ * by subtracting the durations of all preceding stages and their transfer intervals.
+ */
+export function getInoculationDateFromEnvaseStart(
+  recipe: ProductRecipe,
+  envaseStartDate: Date,
+  transferIntervalHours: number
+): Date {
+  let totalHoursBeforeEnvase = 0;
+  // Sum durations of all steps except the last one (Envase) and their transfer intervals
+  for (let i = 0; i < recipe.steps.length - 1; i++) {
+    totalHoursBeforeEnvase += recipe.steps[i].durationHours + transferIntervalHours;
+  }
+  return new Date(envaseStartDate.getTime() - totalHoursBeforeEnvase * 60 * 60 * 1000);
+}
+
+/**
+ * Automatically plans and schedules several batches to meet a production volume goal,
+ * implementing staggered scheduling based on packaging line availability and backward offsets.
+ */
 export function generateAutomaticPlanning(
   recipe: ProductRecipe,
   targetVolume: number,
@@ -469,14 +490,14 @@ export function generateAutomaticPlanning(
 
   // Create active pool copying existing schedule
   const activeBatchesPool = [...existingBatches];
-  const currentSearchStart = new Date(startDateStr);
+  
+  // Track when the packaging bottleneck is next available
+  let ProximoEnvaseDisponivel: Date | null = null;
 
   for (let lotIdx = 0; lotIdx < batchesNeeded; lotIdx++) {
     const lotNumber = `${recipe.name.substring(0, 3).toUpperCase()}-L${String(1000 + lotIdx + 1).substring(1)}`;
     let lotScheduled = false;
 
-    // Scan forward hour-by-hour (up to 45 days = 1080 hours) to see where this batch can be allocated
-    const scanLimitHours = 1080; 
     let foundPerfectStart = '';
     let foundPerfectSteps: ScheduledStep[] = [];
 
@@ -484,46 +505,116 @@ export function generateAutomaticPlanning(
     let foundBypassSteps: ScheduledStep[] = [];
     let bypassReason = '';
 
-    for (let offset = 0; offset <= scanLimitHours; offset++) {
-      const testStart = new Date(currentSearchStart.getTime() + offset * 60 * 60 * 1000);
-      
+    if (lotIdx === 0) {
+      // 1. First batch of the campaign starts Erlenmeyer exactly at the user's selected date
+      const testStart = new Date(startDateStr);
       try {
         const candidateSteps = calculateProductionTimeline(
           recipe,
           testStart.toISOString(),
-          0, // 0h standard interval for auto batches
+          0, // 0h standard transfer interval
           activeBatchesPool,
           preventatives,
-          undefined, // manualAllocations
-          undefined, // ignoreBatchId
+          undefined,
+          undefined,
           setupTimes,
           envaseCount
         );
 
         const hasOverlap = checkStepsOverlap(candidateSteps, activeBatchesPool, preventatives, undefined, setupTimes, envaseCount);
-        if (hasOverlap) {
-          continue; // Physical collision on reactor/preventatives is strictly forbidden
-        }
-
         const shiftVal = validateBatchShifts(candidateSteps, shiftConfig);
-        if (shiftVal.isValid) {
+
+        if (!hasOverlap && shiftVal.isValid) {
           foundPerfectStart = testStart.toISOString();
           foundPerfectSteps = candidateSteps;
           lotScheduled = true;
-          break;
-        } else {
-          // If we haven't found a bypass start yet, save the first physical-safe but shift-invalid slot
-          if (!foundBypassStart) {
-            foundBypassStart = testStart.toISOString();
-            foundBypassSteps = candidateSteps;
-            bypassReason = shiftVal.reason || 'Conflito de turnos.';
-          }
+        } else if (!hasOverlap) {
+          foundBypassStart = testStart.toISOString();
+          foundBypassSteps = candidateSteps;
+          bypassReason = shiftVal.reason || 'Conflito de turnos.';
         }
       } catch (err: any) {
-        // Rota mapping issue, seek next hour
+        // Mapping error or physical collision
+      }
+
+      // Compute the next available Envase date from Batch 1
+      const scheduledSteps = lotScheduled ? foundPerfectSteps : foundBypassSteps;
+      if (scheduledSteps.length > 0) {
+        const envaseStep = scheduledSteps[scheduledSteps.length - 1];
+        const setupHours = setupTimes ? (setupTimes['Envase'] || 0) : 0;
+        ProximoEnvaseDisponivel = new Date(new Date(envaseStep.endDateTime).getTime() + setupHours * 60 * 60 * 1000);
+      } else {
+        // Theoretical fallback if Batch 1 failed completely
+        let totalRecipeHours = 0;
+        recipe.steps.forEach(st => {
+          totalRecipeHours += st.durationHours;
+        });
+        const setupHours = setupTimes ? (setupTimes['Envase'] || 0) : 0;
+        ProximoEnvaseDisponivel = new Date(new Date(startDateStr).getTime() + (totalRecipeHours + setupHours) * 60 * 60 * 1000);
+      }
+    } else {
+      // 2. Subsequent batches: schedule backward from ProximoEnvaseDisponivel, shifting forward if busy
+      const scanLimitHours = 1080; // 45 days limit to find a clear window
+      const baseEnvaseStart = ProximoEnvaseDisponivel || new Date(startDateStr);
+      
+      for (let offset = 0; offset <= scanLimitHours; offset++) {
+        const testEnvaseStart = new Date(baseEnvaseStart.getTime() + offset * 60 * 60 * 1000);
+        const candidateStart = getInoculationDateFromEnvaseStart(recipe, testEnvaseStart, 0);
+
+        try {
+          const candidateSteps = calculateProductionTimeline(
+            recipe,
+            candidateStart.toISOString(),
+            0,
+            activeBatchesPool,
+            preventatives,
+            undefined,
+            undefined,
+            setupTimes,
+            envaseCount
+          );
+
+          const hasOverlap = checkStepsOverlap(candidateSteps, activeBatchesPool, preventatives, undefined, setupTimes, envaseCount);
+          if (hasOverlap) {
+            continue; // Physical collision on reactor/preventatives is strictly forbidden
+          }
+
+          const shiftVal = validateBatchShifts(candidateSteps, shiftConfig);
+          if (shiftVal.isValid) {
+            foundPerfectStart = candidateStart.toISOString();
+            foundPerfectSteps = candidateSteps;
+            lotScheduled = true;
+            break;
+          } else {
+            if (!foundBypassStart) {
+              foundBypassStart = candidateStart.toISOString();
+              foundBypassSteps = candidateSteps;
+              bypassReason = shiftVal.reason || 'Conflito de turnos.';
+            }
+          }
+        } catch (err: any) {
+          // Rota mapping issue, seek next hour
+        }
+      }
+
+      // Update bottleneck availability based on the chosen slot (perfect or bypass)
+      const scheduledSteps = lotScheduled ? foundPerfectSteps : foundBypassSteps;
+      if (scheduledSteps.length > 0) {
+        const envaseStep = scheduledSteps[scheduledSteps.length - 1];
+        const setupHours = setupTimes ? (setupTimes['Envase'] || 0) : 0;
+        ProximoEnvaseDisponivel = new Date(new Date(envaseStep.endDateTime).getTime() + setupHours * 60 * 60 * 1000);
+      } else {
+        // Theoretical fallback if this lot failed completely
+        let totalRecipeHours = 0;
+        recipe.steps.forEach(st => {
+          totalRecipeHours += st.durationHours;
+        });
+        const setupHours = setupTimes ? (setupTimes['Envase'] || 0) : 0;
+        ProximoEnvaseDisponivel = new Date(baseEnvaseStart.getTime() + (totalRecipeHours + setupHours) * 60 * 60 * 1000);
       }
     }
 
+    // Record the results
     if (lotScheduled && foundPerfectStart && foundPerfectSteps.length > 0) {
       const newBatch: Batch = {
         id: `auto-batch-${recipe.id}-${Date.now()}-${lotIdx}`,
@@ -537,7 +628,6 @@ export function generateAutomaticPlanning(
       scheduledBatches.push(newBatch);
       activeBatchesPool.push(newBatch);
     } else if (foundBypassStart && foundBypassSteps.length > 0) {
-      // It is physical-safe but failed shifts -> present as bypassable "Horas Extras" warning!
       errors.push({
         id: `err-bypass-${recipe.id}-${Date.now()}-${lotIdx}`,
         lotNumber,
