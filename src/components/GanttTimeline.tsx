@@ -31,7 +31,30 @@ const CATEGORIES = [
 ];
 
 export default function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDeletePreventative, onUpdateBatches, onAddDeviationLog, setupTimes, envaseLinesCount }: GanttTimelineProps) {
-  const assetsList = getAssetsPool(envaseLinesCount);
+  const [visibleScales, setVisibleScales] = useState<Record<ScaleType, boolean>>(() => {
+    const saved = localStorage.getItem('pcp_gantt_visible_scales');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {}
+    }
+    return {
+      'Erlenmeyer': true,
+      'Balão': true,
+      '100L': true,
+      '500L': true,
+      '3000_5000L': true,
+      'Envase': true
+    };
+  });
+
+  useEffect(() => {
+    localStorage.setItem('pcp_gantt_visible_scales', JSON.stringify(visibleScales));
+  }, [visibleScales]);
+
+  const fullAssetsList = getAssetsPool(envaseLinesCount);
+  const assetsList = fullAssetsList.filter(asset => visibleScales[asset.scaleType]);
+
   const [activeMonth, setActiveMonth] = useState<number>(5); // Default to June (index 5)
   const [viewMode, setViewMode] = useState<'days' | 'weeks'>('days');
   const [now, setNow] = useState<Date>(new Date());
@@ -595,16 +618,47 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
 
       {/* Gantt Interactive Area */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col" id="gantt-board">
-        {/* Shaded legend header bar */}
-        <div className="flex bg-slate-50 text-xs border-b border-slate-200 px-4 py-2 font-semibold text-slate-500 justify-between items-center select-none">
-          <div className="flex items-center gap-3">
+        {/* Shaded legend and Filter scale bar */}
+        <div className="flex flex-col xl:flex-row bg-slate-50 text-xs border-b border-slate-200 px-4 py-3 gap-3 xl:items-center justify-between select-none">
+          {/* Legend */}
+          <div className="flex flex-wrap items-center gap-3">
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-blue-500 inline-block"></span> SOJA</span>
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-emerald-500 inline-block"></span> PREMIER</span>
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-amber-500 inline-block"></span> MILHO</span>
-            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-black inline-block"></span> PREVENTIVAS / BLOQUEIOS</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-black inline-block"></span> PREVENTIVAS</span>
           </div>
-          <div className="text-[10px] text-indigo-600 bg-indigo-50 font-bold px-2 py-0.5 rounded flex items-center gap-1">
-            <span className="animate-ping w-1.5 h-1.5 rounded-full bg-indigo-500"></span> Linha vermelha representa o dia e horário atual ({formatFullDate(now.toISOString())})
+
+          {/* Scale Filters */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[9px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1 mr-1">
+              <Eye size={12} /> Mostrar Escalas:
+            </span>
+            {(['Erlenmeyer', 'Balão', '100L', '500L', '3000_5000L', 'Envase'] as ScaleType[]).map((scale) => {
+              const active = visibleScales[scale];
+              let label = scale === '3000_5000L' ? 'Tanques 5kL' : scale === 'Envase' ? 'Envase' : `Escala ${scale}`;
+              let scaleBadgeColor = '';
+              if (scale === 'Erlenmeyer') scaleBadgeColor = active ? 'bg-teal-900 text-teal-100 border-teal-850' : 'bg-slate-100 text-slate-400 border-slate-200';
+              else if (scale === 'Balão') scaleBadgeColor = active ? 'bg-sky-900 text-sky-100 border-sky-850' : 'bg-slate-100 text-slate-400 border-slate-200';
+              else if (scale === '100L') scaleBadgeColor = active ? 'bg-orange-950 text-orange-100 border-orange-850' : 'bg-slate-100 text-slate-400 border-slate-200';
+              else if (scale === '500L') scaleBadgeColor = active ? 'bg-amber-900 text-amber-100 border-amber-850' : 'bg-slate-100 text-slate-400 border-slate-200';
+              else if (scale === '3000_5000L') scaleBadgeColor = active ? 'bg-purple-900 text-purple-100 border-purple-800' : 'bg-slate-100 text-slate-400 border-slate-200';
+              else if (scale === 'Envase') scaleBadgeColor = active ? 'bg-rose-900 text-rose-100 border-rose-800' : 'bg-slate-100 text-slate-400 border-slate-200';
+
+              return (
+                <button
+                  key={scale}
+                  type="button"
+                  onClick={() => setVisibleScales(prev => ({ ...prev, [scale]: !prev[scale] }))}
+                  className={`px-2 py-1 rounded text-[10px] font-bold border transition-all cursor-pointer shadow-3xs hover:scale-[1.02] active:scale-[0.98] ${scaleBadgeColor}`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="text-[10px] text-indigo-600 bg-indigo-50 font-bold px-2 py-0.5 rounded flex items-center gap-1 xl:self-center self-start">
+            <span className="animate-ping w-1.5 h-1.5 rounded-full bg-indigo-500"></span> Linha vermelha atual ({formatFullDate(now.toISOString())})
           </div>
         </div>
 

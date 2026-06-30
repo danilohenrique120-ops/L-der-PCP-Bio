@@ -11,7 +11,7 @@ import GanttTimeline from './components/GanttTimeline';
 import BatchForm from './components/BatchForm';
 import ProductForm from './components/ProductForm';
 import PreventativeForm from './components/PreventativeForm';
-import { AlertTriangle, Calendar, PlayCircle, Layers, ShieldX, HelpCircle, AlertOctagon, CheckCircle, BarChart3, Database, RefreshCw, XCircle, Trash2, Clock, CalendarDays, Sliders } from 'lucide-react';
+import { AlertTriangle, Calendar, PlayCircle, Layers, ShieldX, HelpCircle, AlertOctagon, CheckCircle, BarChart3, Database, RefreshCw, XCircle, Trash2, Clock, CalendarDays, Sliders, ChevronUp, ChevronDown } from 'lucide-react';
 import { getAssetsPool, normalizeAssetId } from './types';
 
 export default function App() {
@@ -70,6 +70,16 @@ export default function App() {
     ]
   });
   const [planningErrors, setPlanningErrors] = useState<PlanningErrorLog[]>([]);
+  const [planningModeTab, setPlanningModeTab] = useState<'single' | 'mix'>('single');
+  const [mixConfig, setMixConfig] = useState<Record<string, { enabled: boolean; volume: number; priority: number }>>({});
+  const [showConfigPanels, setShowConfigPanels] = useState<boolean>(() => {
+    const saved = localStorage.getItem('pcp_show_config_panels');
+    return saved !== null ? saved === 'true' : true;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('pcp_show_config_panels', String(showConfigPanels));
+  }, [showConfigPanels]);
 
   // Multi-shift management handlers
   const handleUpdateShift = (id: string, updatedFields: Partial<Shift>) => {
@@ -233,6 +243,24 @@ export default function App() {
   }, [recipes, plannerRecipeId]);
 
   useEffect(() => {
+    if (recipes.length > 0) {
+      setMixConfig(prev => {
+        const next = { ...prev };
+        recipes.forEach((r, idx) => {
+          if (!next[r.id]) {
+            next[r.id] = {
+              enabled: false,
+              volume: r.yieldPerBatch * 3,
+              priority: idx + 1
+            };
+          }
+        });
+        return next;
+      });
+    }
+  }, [recipes]);
+
+  useEffect(() => {
     localStorage.setItem('pcp_envase_lines_count', String(envaseLinesCount));
   }, [envaseLinesCount]);
 
@@ -378,6 +406,69 @@ export default function App() {
 
     if (result.errors.length > 0) {
       setPlanningErrors(result.errors);
+    } else {
+      setPlanningErrors([]);
+    }
+  };
+
+  const handleAutoPlanMix = (e: React.FormEvent) => {
+    e.preventDefault();
+    setPlanningErrors([]);
+
+    const selectedItems = Object.entries(mixConfig)
+      .map(([productId, cfg]) => {
+        const config = cfg as { enabled: boolean; volume: number; priority: number };
+        return {
+          productId,
+          enabled: config?.enabled || false,
+          volume: config?.volume || 0,
+          priority: config?.priority || 1
+        };
+      })
+      .filter(item => item.enabled && item.volume > 0);
+
+    if (selectedItems.length === 0) {
+      alert('Selecione pelo menos um produto do mix com volume maior que zero.');
+      return;
+    }
+
+    const sortedItems = [...selectedItems].sort((a, b) => a.priority - b.priority);
+
+    let activePool = [...batches];
+    let allNewBatches: Batch[] = [];
+    let allErrors: PlanningErrorLog[] = [];
+
+    sortedItems.forEach((mixItem) => {
+      const recipe = recipes.find(r => r.id === mixItem.productId);
+      if (!recipe) return;
+
+      const result = generateAutomaticPlanning(
+        recipe,
+        mixItem.volume,
+        plannerStart,
+        activePool,
+        preventatives,
+        shiftConfig,
+        setupTimes,
+        envaseLinesCount
+      );
+
+      if (result.scheduledBatches.length > 0) {
+        allNewBatches.push(...result.scheduledBatches);
+        activePool.push(...result.scheduledBatches);
+      }
+
+      if (result.errors.length > 0) {
+        allErrors.push(...result.errors);
+      }
+    });
+
+    if (allNewBatches.length > 0) {
+      setBatches(prev => [...prev, ...allNewBatches]);
+    }
+
+    if (allErrors.length > 0) {
+      setPlanningErrors(allErrors);
     } else {
       setPlanningErrors([]);
     }
@@ -605,8 +696,32 @@ export default function App() {
           {activeTab === 'gantt' && (
             <div className="space-y-6 flex flex-col justify-start">
               
+              {/* HEADER DA SEÇÃO DE CONFIGURAÇÃO COM BOTÃO DE TOGGLE/MINIMIZAR */}
+              <div className="flex justify-between items-center bg-white px-4 py-2.5 rounded-xl border border-slate-200 shadow-xs shrink-0 select-none">
+                <div className="flex items-center gap-2">
+                  <Sliders size={14} className="text-slate-500" />
+                  <span className="text-[10px] font-extrabold text-slate-700 uppercase tracking-wider">Painéis de Configuração Operacional e Metas (PCP)</span>
+                </div>
+                <button
+                  onClick={() => setShowConfigPanels(!showConfigPanels)}
+                  className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-650 hover:text-slate-800 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer border border-slate-200 shadow-3xs"
+                  title={showConfigPanels ? "Minimizar painéis de configuração" : "Expandir painéis de configuração"}
+                >
+                  {showConfigPanels ? (
+                    <>
+                      <ChevronUp size={14} /> Minimizar Painéis
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDown size={14} /> Expandir Painéis
+                    </>
+                  )}
+                </button>
+              </div>
+
               {/* TRIPLE CONFIGURATION PANELS */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {showConfigPanels && (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 
                 {/* PANEL 1: CONFIGURAÇÃO DE TURNOS OPERACIONAIS */}
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4 flex flex-col justify-between">
@@ -734,63 +849,123 @@ export default function App() {
                     <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">Planejamento Periódico por Meta de Volume</h3>
                   </div>
                   
-                  <form onSubmit={handleAutoPlan} className="space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      {/* Product select */}
-                      <div className="space-y-1.5 col-span-2 sm:col-span-1">
-                        <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Selecionar Produto</label>
-                        <select
-                          value={plannerRecipeId}
-                          onChange={(e) => setPlannerRecipeId(e.target.value)}
-                          className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-slate-700 focus:outline-none"
-                          required
-                        >
-                          {recipes.map(r => (
-                            <option key={r.id} value={r.id}>
-                              {r.name} (Rend: {r.yieldPerBatch?.toLocaleString('pt-BR') || '3.000'}L)
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                  {/* Selector de modo: Único ou Mix */}
+                  <div className="flex border-b border-slate-100 pb-2 mb-3 gap-4">
+                    <button
+                      type="button"
+                      onClick={() => setPlanningModeTab('single')}
+                      className={`text-xs font-bold pb-1 cursor-pointer transition-all ${
+                        planningModeTab === 'single'
+                          ? 'text-indigo-600 border-b-2 border-indigo-600'
+                          : 'text-slate-400 hover:text-slate-650'
+                      }`}
+                    >
+                      Lote Único
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPlanningModeTab('mix')}
+                      className={`text-xs font-bold pb-1 cursor-pointer transition-all ${
+                        planningModeTab === 'mix'
+                          ? 'text-indigo-600 border-b-2 border-indigo-600'
+                          : 'text-slate-400 hover:text-slate-650'
+                      }`}
+                    >
+                      Mix de Produtos
+                    </button>
+                  </div>
 
-                      {/* Meta volume */}
-                      <div className="space-y-1.5 col-span-2 sm:col-span-1">
-                        <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Meta Mensal (L / Doses)</label>
-                        <div className="relative">
+                  {planningModeTab === 'mix' ? (
+                    <form onSubmit={handleAutoPlanMix} className="space-y-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        {/* Data inicial do plano */}
+                        <div className="space-y-1.5 col-span-2 sm:col-span-1">
+                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Data Início da Campanha (Comum)</label>
                           <input
-                            type="number"
-                            min="1"
-                            value={targetVolume}
-                            onChange={(e) => setTargetVolume(Math.max(1, parseInt(e.target.value) || 1))}
-                            className="w-full pl-3 pr-8 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700"
+                            type="datetime-local"
+                            value={plannerStart}
+                            onChange={(e) => setPlannerStart(e.target.value)}
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-semibold text-slate-700"
                             required
                           />
-                          <span className="absolute right-2.5 top-1.5 text-[10px] uppercase font-bold text-slate-400 pointer-events-none">Litros</span>
+                        </div>
+                        <div className="col-span-2 sm:col-span-1 flex items-end">
+                          <span className="text-[10px] text-slate-400 leading-relaxed font-semibold">
+                            *O motor PCP agendará sequencialmente os produtos marcados na ordem de prioridade definida abaixo.
+                          </span>
                         </div>
                       </div>
-                    </div>
 
-                    <div className="grid grid-cols-2 gap-4">
-                      {/* Data inicial do plano */}
-                      <div className="space-y-1.5 col-span-2 sm:col-span-1">
-                        <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Data Início da Campanha</label>
-                        <input
-                          type="datetime-local"
-                          value={plannerStart}
-                          onChange={(e) => setPlannerStart(e.target.value)}
-                          className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-semibold text-slate-700"
-                          required
-                        />
+                      {/* Lista de Produtos do Mix */}
+                      <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                        {recipes.map((r) => {
+                          const config = mixConfig[r.id] || { enabled: false, volume: r.yieldPerBatch * 3, priority: 1 };
+                          return (
+                            <div key={r.id} className="flex items-center gap-2 p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs">
+                              {/* Habilitado */}
+                              <input
+                                type="checkbox"
+                                checked={config.enabled}
+                                onChange={(e) => setMixConfig(prev => ({
+                                  ...prev,
+                                  [r.id]: { ...prev[r.id], enabled: e.target.checked }
+                                }))}
+                                className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                              />
+
+                              {/* Nome do Produto */}
+                              <div className="flex-1 min-w-0">
+                                <p className="font-bold truncate text-slate-700">{r.name}</p>
+                                <p className="text-[9px] text-slate-400 font-mono">Rend: {r.yieldPerBatch.toLocaleString('pt-BR')} L/Lote</p>
+                              </div>
+
+                              {/* Volume (apenas habilitado se checkbox estiver ativo) */}
+                              <div className="w-28 flex items-center gap-1">
+                                <input
+                                  type="number"
+                                  placeholder="Volume"
+                                  disabled={!config.enabled}
+                                  value={config.volume}
+                                  onChange={(e) => setMixConfig(prev => ({
+                                    ...prev,
+                                    [r.id]: { ...prev[r.id], volume: Math.max(0, parseInt(e.target.value) || 0) }
+                                  }))}
+                                  className="w-full px-1.5 py-1 bg-white border border-slate-200 rounded text-center font-mono text-[11px] disabled:bg-slate-100 disabled:text-slate-400 font-bold"
+                                />
+                                <span className="text-[9px] text-slate-400 font-bold">L</span>
+                              </div>
+
+                              {/* Prioridade/Sequência */}
+                              <div className="w-16">
+                                <select
+                                  disabled={!config.enabled}
+                                  value={config.priority}
+                                  onChange={(e) => setMixConfig(prev => ({
+                                    ...prev,
+                                    [r.id]: { ...prev[r.id], priority: parseInt(e.target.value) || 1 }
+                                  }))}
+                                  className="w-full px-1 py-1 bg-white border border-slate-200 rounded text-center text-[11px] font-bold text-slate-700 disabled:bg-slate-100 disabled:text-slate-400 cursor-pointer"
+                                >
+                                  {Array.from({ length: recipes.length }, (_, i) => (
+                                    <option key={i + 1} value={i + 1}>
+                                      {i + 1}º
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
 
-                      {/* Botões de Ações */}
-                      <div className="flex items-end gap-2 col-span-2 sm:col-span-1">
+                      {/* Botões de Ações do Mix */}
+                      <div className="flex gap-2 pt-2">
                         <button
                           type="submit"
-                          className="flex-1 flex items-center justify-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2 rounded-lg transition-colors shadow-xs cursor-pointer h-9 shrink-0"
-                          title="Gerar Sequenciamento de Planejamento Automático PCP"
+                          className="flex-1 flex items-center justify-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2 rounded-lg transition-colors shadow-xs cursor-pointer h-9"
+                          title="Gerar Sequenciamento de Mix de Produtos"
                         >
-                          <RefreshCw size={12} /> Gerar Planejamento
+                          <RefreshCw size={12} /> Gerar Mix
                         </button>
                         <button
                           type="button"
@@ -801,8 +976,78 @@ export default function App() {
                           <Trash2 size={14} />
                         </button>
                       </div>
-                    </div>
-                  </form>
+                    </form>
+                  ) : (
+                    <form onSubmit={handleAutoPlan} className="space-y-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        {/* Product select */}
+                        <div className="space-y-1.5 col-span-2 sm:col-span-1">
+                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Selecionar Produto</label>
+                          <select
+                            value={plannerRecipeId}
+                            onChange={(e) => setPlannerRecipeId(e.target.value)}
+                            className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-slate-700 focus:outline-none"
+                            required
+                          >
+                            {recipes.map(r => (
+                              <option key={r.id} value={r.id}>
+                                {r.name} (Rend: {r.yieldPerBatch?.toLocaleString('pt-BR') || '3.000'}L)
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* Meta volume */}
+                        <div className="space-y-1.5 col-span-2 sm:col-span-1">
+                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Meta Mensal (L / Doses)</label>
+                          <div className="relative">
+                            <input
+                              type="number"
+                              min="1"
+                              value={targetVolume}
+                              onChange={(e) => setTargetVolume(Math.max(1, parseInt(e.target.value) || 1))}
+                              className="w-full pl-3 pr-8 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700"
+                              required
+                            />
+                            <span className="absolute right-2.5 top-1.5 text-[10px] uppercase font-bold text-slate-400 pointer-events-none">Litros</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        {/* Data inicial do plano */}
+                        <div className="space-y-1.5 col-span-2 sm:col-span-1">
+                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Data Início da Campanha</label>
+                          <input
+                            type="datetime-local"
+                            value={plannerStart}
+                            onChange={(e) => setPlannerStart(e.target.value)}
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-semibold text-slate-700"
+                            required
+                          />
+                        </div>
+
+                        {/* Botões de Ações */}
+                        <div className="flex items-end gap-2 col-span-2 sm:col-span-1">
+                          <button
+                            type="submit"
+                            className="flex-1 flex items-center justify-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2 rounded-lg transition-colors shadow-xs cursor-pointer h-9 shrink-0"
+                            title="Gerar Sequenciamento de Planejamento Automático PCP"
+                          >
+                            <RefreshCw size={12} /> Gerar Planejamento
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleClearAllBatches}
+                            className="flex items-center justify-center bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-600 p-2 rounded-lg transition-colors cursor-pointer h-9"
+                            title="Apagar TODOS os lotes cadastrados"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    </form>
+                  )}
                 </div>
 
                 {/* PANEL 3: RESTRIÇÕES INDUSTRIAIS: SETUP/CIP E LINHAS DE ENVASE ATIVAS */}
@@ -872,6 +1117,7 @@ export default function App() {
                 </div>
 
               </div>
+              )}
 
               {/* FINITE PLANNING ERROR LOG MESSAGES */}
               {planningErrors.length > 0 && (

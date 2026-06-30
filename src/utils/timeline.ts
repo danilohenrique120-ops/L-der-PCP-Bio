@@ -228,36 +228,96 @@ export function getDayName(day: number): string {
   return days[day] || '';
 }
 
+export interface ShiftValidationResult {
+  isValid: boolean;
+  hasIndustrialViolation: boolean;
+  hasInoculumViolation: boolean;
+  reason?: string;
+  failedStep?: string;
+  failedTime?: string;
+}
+
 export function validateBatchShifts(
   steps: ScheduledStep[],
   shiftConfig: ShiftConfig
-): { isValid: boolean; reason?: string; failedStep?: string; failedTime?: string } {
+): ShiftValidationResult {
+  let hasIndustrialViolation = false;
+  let hasInoculumViolation = false;
+  let firstFailedStep = '';
+  let firstFailedTime = '';
+  let firstReason = '';
+
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
+    const isIndustrial = !['Erlenmeyer', 'Balão'].includes(step.scaleType);
     
     // Inoculação / Scale transfer start
     if (!isDateTimeInWorkingHours(step.startDateTime, shiftConfig)) {
       const operationName = i === 0 ? "Inoculação" : `Trf. para ${step.scaleType}`;
-      return {
-        isValid: false,
-        failedStep: step.scaleType,
-        failedTime: step.startDateTime,
-        reason: `${operationName} em ${formatFullDate(step.startDateTime)} (${getDayName(new Date(step.startDateTime).getDay())}) caiu fora de todos os turnos de trabalho ativos.`
-      };
+      const reason = `${operationName} em ${formatFullDate(step.startDateTime)} (${getDayName(new Date(step.startDateTime).getDay())}) caiu fora de todos os turnos de trabalho ativos.`;
+      
+      if (isIndustrial) {
+        hasIndustrialViolation = true;
+        return {
+          isValid: false,
+          hasIndustrialViolation: true,
+          hasInoculumViolation,
+          failedStep: step.scaleType,
+          failedTime: step.startDateTime,
+          reason
+        };
+      } else {
+        hasInoculumViolation = true;
+        if (!firstReason) {
+          firstFailedStep = step.scaleType;
+          firstFailedTime = step.startDateTime;
+          firstReason = reason;
+        }
+      }
     }
     
     // Transfer / Envase (scale end)
     if (!isDateTimeInWorkingHours(step.endDateTime, shiftConfig)) {
       const operationName = i === steps.length - 1 ? "Envase (Quality)" : `Trf. de ${step.scaleType}`;
-      return {
-        isValid: false,
-        failedStep: step.scaleType,
-        failedTime: step.endDateTime,
-        reason: `${operationName} em ${formatFullDate(step.endDateTime)} (${getDayName(new Date(step.endDateTime).getDay())}) caiu fora de todos os turnos de trabalho ativos.`
-      };
+      const reason = `${operationName} em ${formatFullDate(step.endDateTime)} (${getDayName(new Date(step.endDateTime).getDay())}) caiu fora de todos os turnos de trabalho ativos.`;
+      
+      if (isIndustrial) {
+        hasIndustrialViolation = true;
+        return {
+          isValid: false,
+          hasIndustrialViolation: true,
+          hasInoculumViolation,
+          failedStep: step.scaleType,
+          failedTime: step.endDateTime,
+          reason
+        };
+      } else {
+        hasInoculumViolation = true;
+        if (!firstReason) {
+          firstFailedStep = step.scaleType;
+          firstFailedTime = step.endDateTime;
+          firstReason = reason;
+        }
+      }
     }
   }
-  return { isValid: true };
+
+  if (hasInoculumViolation) {
+    return {
+      isValid: false,
+      hasIndustrialViolation: false,
+      hasInoculumViolation: true,
+      failedStep: firstFailedStep,
+      failedTime: firstFailedTime,
+      reason: firstReason
+    };
+  }
+
+  return {
+    isValid: true,
+    hasIndustrialViolation: false,
+    hasInoculumViolation: false
+  };
 }
 
 export interface ScheduleAttemptResult {
@@ -330,108 +390,112 @@ export function tryScheduleBatchBackward(
 ): ScheduleAttemptResult {
   const envaseCount = envaseLinesCount || 3;
   const preferredStart = new Date(preferredStartStr);
+  let bestFallback: ScheduleAttemptResult | null = null;
   let initialErrorReason = '';
 
+  const testCandidate = (startDate: Date): { success: boolean; isPerfect: boolean; steps: ScheduledStep[]; reason?: string } => {
+    try {
+      const steps = calculateProductionTimeline(
+        recipe,
+        startDate.toISOString(),
+        transferIntervalHours,
+        existingBatches,
+        preventatives,
+        manualAllocations,
+        ignoreBatchId,
+        setupTimes,
+        envaseCount
+      );
+
+      const shiftVal = validateBatchShifts(steps, shiftConfig);
+      const hasOverlap = checkStepsOverlap(steps, existingBatches, preventatives, ignoreBatchId, setupTimes, envaseCount);
+
+      if (hasOverlap) {
+        return { success: false, isPerfect: false, steps: [], reason: 'Conflito com outro lote ou preventiva.' };
+      }
+
+      if (shiftVal.hasIndustrialViolation) {
+        return { success: false, isPerfect: false, steps: [], reason: shiftVal.reason };
+      }
+
+      return {
+        success: true,
+        isPerfect: !shiftVal.hasInoculumViolation,
+        steps,
+        reason: shiftVal.reason
+      };
+    } catch (err: any) {
+      return { success: false, isPerfect: false, steps: [], reason: err.message };
+    }
+  };
+
   // 1. Initial direct forward check
-  let initialSteps: ScheduledStep[] = [];
-  try {
-    initialSteps = calculateProductionTimeline(
-      recipe,
-      preferredStartStr,
-      transferIntervalHours,
-      existingBatches,
-      preventatives,
-      manualAllocations,
-      ignoreBatchId,
-      setupTimes,
-      envaseCount
-    );
-  } catch (err: any) {
-    return {
-      success: false,
-      steps: [],
-      startDateTime: preferredStartStr,
-      errorReason: err.message || 'Erro ao mapear rota de reatores para o lote.'
-    };
-  }
-
-  const shiftVal = validateBatchShifts(initialSteps, shiftConfig);
-  const overlapsVal = checkStepsOverlap(initialSteps, existingBatches, preventatives, ignoreBatchId, setupTimes, envaseCount);
-
-  if (shiftVal.isValid && !overlapsVal) {
-    return {
-      success: true,
-      steps: initialSteps,
-      startDateTime: preferredStartStr
-    };
-  }
-
-  if (!shiftVal.isValid) {
-    initialErrorReason = shiftVal.reason || '';
+  const preferredRes = testCandidate(preferredStart);
+  if (preferredRes.success) {
+    if (preferredRes.isPerfect) {
+      return {
+        success: true,
+        steps: preferredRes.steps,
+        startDateTime: preferredStartStr
+      };
+    } else {
+      bestFallback = {
+        success: true,
+        steps: preferredRes.steps,
+        startDateTime: preferredStartStr,
+        errorReason: preferredRes.reason
+      };
+    }
   } else {
-    initialErrorReason = 'Tempo coincide de forma conflitante com Manutenção Preventiva ou outro lote ativo (incluindo tempo de setup/higienização).';
+    initialErrorReason = preferredRes.reason || '';
   }
 
   // 2. BACKWARD SCHEDULING - Search up to 168 hours backward
   for (let hoursBack = 1; hoursBack <= 168; hoursBack++) {
     const testStart = new Date(preferredStart.getTime() - hoursBack * 60 * 60 * 1000);
-    try {
-      const backwardSteps = calculateProductionTimeline(
-        recipe,
-        testStart.toISOString(),
-        transferIntervalHours,
-        existingBatches,
-        preventatives,
-        manualAllocations,
-        ignoreBatchId,
-        setupTimes,
-        envaseCount
-      );
-
-      const testShiftVal = validateBatchShifts(backwardSteps, shiftConfig);
-      const testOverlap = checkStepsOverlap(backwardSteps, existingBatches, preventatives, ignoreBatchId, setupTimes, envaseCount);
-
-      if (testShiftVal.isValid && !testOverlap) {
+    const res = testCandidate(testStart);
+    if (res.success) {
+      if (res.isPerfect) {
         return {
           success: true,
-          steps: backwardSteps,
+          steps: res.steps,
           startDateTime: testStart.toISOString()
         };
+      } else if (!bestFallback) {
+        bestFallback = {
+          success: true,
+          steps: res.steps,
+          startDateTime: testStart.toISOString(),
+          errorReason: res.reason
+        };
       }
-    } catch {
-      // Keep searching
     }
   }
 
-  // 3. FORWARD SCHEDULING - Try to search forward as fallback (up to 7 days) if backward didn't work
+  // 3. FORWARD SCHEDULING - Try to search forward as fallback (up to 7 days)
   for (let hoursForward = 1; hoursForward <= 168; hoursForward++) {
     const testStart = new Date(preferredStart.getTime() + hoursForward * 60 * 60 * 1000);
-    try {
-      const forwardSteps = calculateProductionTimeline(
-        recipe,
-        testStart.toISOString(),
-        transferIntervalHours,
-        existingBatches,
-        preventatives,
-        manualAllocations,
-        ignoreBatchId,
-        setupTimes,
-        envaseCount
-      );
-
-      const testShiftVal = validateBatchShifts(forwardSteps, shiftConfig);
-      const testOverlap = checkStepsOverlap(forwardSteps, existingBatches, preventatives, ignoreBatchId, setupTimes, envaseCount);
-
-      if (testShiftVal.isValid && !testOverlap) {
+    const res = testCandidate(testStart);
+    if (res.success) {
+      if (res.isPerfect) {
         return {
           success: true,
-          steps: forwardSteps,
+          steps: res.steps,
           startDateTime: testStart.toISOString()
         };
+      } else if (!bestFallback) {
+        bestFallback = {
+          success: true,
+          steps: res.steps,
+          startDateTime: testStart.toISOString(),
+          errorReason: res.reason
+        };
       }
-    } catch {
-      // Keep searching
     }
+  }
+
+  if (bestFallback) {
+    return bestFallback;
   }
 
   return {
@@ -501,6 +565,10 @@ export function generateAutomaticPlanning(
     let foundPerfectStart = '';
     let foundPerfectSteps: ScheduledStep[] = [];
 
+    let foundFlexibleStart = '';
+    let foundFlexibleSteps: ScheduledStep[] = [];
+    let flexibleReason = '';
+
     let foundBypassStart = '';
     let foundBypassSteps: ScheduledStep[] = [];
     let bypassReason = '';
@@ -524,23 +592,32 @@ export function generateAutomaticPlanning(
         const hasOverlap = checkStepsOverlap(candidateSteps, activeBatchesPool, preventatives, undefined, setupTimes, envaseCount);
         const shiftVal = validateBatchShifts(candidateSteps, shiftConfig);
 
-        if (!hasOverlap && shiftVal.isValid) {
-          foundPerfectStart = testStart.toISOString();
-          foundPerfectSteps = candidateSteps;
-          lotScheduled = true;
-        } else if (!hasOverlap) {
-          foundBypassStart = testStart.toISOString();
-          foundBypassSteps = candidateSteps;
-          bypassReason = shiftVal.reason || 'Conflito de turnos.';
+        if (!hasOverlap) {
+          if (shiftVal.isValid) {
+            foundPerfectStart = testStart.toISOString();
+            foundPerfectSteps = candidateSteps;
+            lotScheduled = true;
+          } else if (!shiftVal.hasIndustrialViolation) {
+            foundFlexibleStart = testStart.toISOString();
+            foundFlexibleSteps = candidateSteps;
+            flexibleReason = shiftVal.reason || 'Necessita inoculação (Erlenmeyer/Balão) fora do turno.';
+          } else {
+            foundBypassStart = testStart.toISOString();
+            foundBypassSteps = candidateSteps;
+            bypassReason = shiftVal.reason || 'Conflito de turnos industriais.';
+          }
         }
       } catch (err: any) {
         // Mapping error or physical collision
       }
 
       // Compute the next available Envase date from Batch 1
-      const scheduledSteps = lotScheduled ? foundPerfectSteps : foundBypassSteps;
-      if (scheduledSteps.length > 0) {
-        const envaseStep = scheduledSteps[scheduledSteps.length - 1];
+      const chosenSteps = lotScheduled 
+        ? foundPerfectSteps 
+        : (foundFlexibleSteps.length > 0 ? foundFlexibleSteps : foundBypassSteps);
+
+      if (chosenSteps.length > 0) {
+        const envaseStep = chosenSteps[chosenSteps.length - 1];
         const setupHours = setupTimes ? (setupTimes['Envase'] || 0) : 0;
         ProximoEnvaseDisponivel = new Date(new Date(envaseStep.endDateTime).getTime() + setupHours * 60 * 60 * 1000);
       } else {
@@ -586,10 +663,18 @@ export function generateAutomaticPlanning(
             lotScheduled = true;
             break;
           } else {
-            if (!foundBypassStart) {
-              foundBypassStart = candidateStart.toISOString();
-              foundBypassSteps = candidateSteps;
-              bypassReason = shiftVal.reason || 'Conflito de turnos.';
+            if (!shiftVal.hasIndustrialViolation) {
+              if (!foundFlexibleStart) {
+                foundFlexibleStart = candidateStart.toISOString();
+                foundFlexibleSteps = candidateSteps;
+                flexibleReason = shiftVal.reason || 'Necessita inoculação (Erlenmeyer/Balão) fora do turno.';
+              }
+            } else {
+              if (!foundBypassStart) {
+                foundBypassStart = candidateStart.toISOString();
+                foundBypassSteps = candidateSteps;
+                bypassReason = shiftVal.reason || 'Conflito de turnos industriais.';
+              }
             }
           }
         } catch (err: any) {
@@ -597,10 +682,13 @@ export function generateAutomaticPlanning(
         }
       }
 
-      // Update bottleneck availability based on the chosen slot (perfect or bypass)
-      const scheduledSteps = lotScheduled ? foundPerfectSteps : foundBypassSteps;
-      if (scheduledSteps.length > 0) {
-        const envaseStep = scheduledSteps[scheduledSteps.length - 1];
+      // Update bottleneck availability based on the chosen slot (perfect, flexible, or bypass)
+      const chosenSteps = lotScheduled 
+        ? foundPerfectSteps 
+        : (foundFlexibleSteps.length > 0 ? foundFlexibleSteps : foundBypassSteps);
+
+      if (chosenSteps.length > 0) {
+        const envaseStep = chosenSteps[chosenSteps.length - 1];
         const setupHours = setupTimes ? (setupTimes['Envase'] || 0) : 0;
         ProximoEnvaseDisponivel = new Date(new Date(envaseStep.endDateTime).getTime() + setupHours * 60 * 60 * 1000);
       } else {
@@ -627,13 +715,24 @@ export function generateAutomaticPlanning(
       
       scheduledBatches.push(newBatch);
       activeBatchesPool.push(newBatch);
+    } else if (foundFlexibleStart && foundFlexibleSteps.length > 0) {
+      errors.push({
+        id: `err-bypass-${recipe.id}-${Date.now()}-${lotIdx}`,
+        lotNumber,
+        productName: recipe.name,
+        timestamp: new Date().toISOString(),
+        reason: `Turno Flexível (Inoculação): ${flexibleReason}`,
+        productId: recipe.id,
+        startDateTime: foundFlexibleStart,
+        canBypass: true
+      });
     } else if (foundBypassStart && foundBypassSteps.length > 0) {
       errors.push({
         id: `err-bypass-${recipe.id}-${Date.now()}-${lotIdx}`,
         lotNumber,
         productName: recipe.name,
         timestamp: new Date().toISOString(),
-        reason: `Cairia fora do turno de trabalho operacional. ${bypassReason}`,
+        reason: `Turno Industrial (Horas Extras): ${bypassReason}`,
         productId: recipe.id,
         startDateTime: foundBypassStart,
         canBypass: true
