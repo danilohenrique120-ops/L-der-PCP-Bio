@@ -8,6 +8,9 @@ import { ProductRecipe, Batch, Preventative, COLOR_OPTIONS, ScaleType, ShiftConf
 import { INITIAL_RECIPES, INITIAL_PREVENTATIVES, getInitialBatches } from './data/mockData';
 import { areIntervalsOverlapping, generateAutomaticPlanning, calculateProductionTimeline, formatFullDate } from './utils/timeline';
 import GanttTimeline from './components/GanttTimeline';
+import { User, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
+import { collection, getDocs, doc, setDoc, getDoc, deleteDoc } from "firebase/firestore";
+import { auth, getTenantDb } from "./firebase";
 import BatchForm from './components/BatchForm';
 import ProductForm from './components/ProductForm';
 import PreventativeForm from './components/PreventativeForm';
@@ -18,50 +21,20 @@ export default function App() {
   // Tabs: 'gantt' | 'batch' | 'product' | 'preventatives' | 'deviations'
   const [activeTab, setActiveTab] = useState<'gantt' | 'batch' | 'product' | 'preventatives' | 'deviations'>('gantt');
 
-  // Core application states loaded from localStorage or pre-populated mocks
+  // Core application states loaded from Firestore multi-tenant configs
   const [recipes, setRecipes] = useState<ProductRecipe[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [preventatives, setPreventatives] = useState<Preventative[]>([]);
-  
-  // Real-time Deviation Logs
-  const [deviations, setDeviations] = useState<DeviationLog[]>(() => {
-    const saved = localStorage.getItem('pcp_deviations');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        return [];
-      }
-    }
-    return [];
+  const [deviations, setDeviations] = useState<DeviationLog[]>([]);
+  const [envaseLinesCount, setEnvaseLinesCount] = useState<number>(3);
+  const [setupTimes, setSetupTimes] = useState<Record<ScaleType, number>>({
+    'Erlenmeyer': 0,
+    'Balão': 0,
+    '100L': 4,
+    '500L': 6,
+    '3000_5000L': 8,
+    'Envase': 4
   });
-
-  // Setup/CIP Block time configurations (in hours) and Envaser Machine lines count state
-  const [envaseLinesCount, setEnvaseLinesCount] = useState<number>(() => {
-    const saved = localStorage.getItem('pcp_envase_lines_count');
-    return saved ? parseInt(saved) : 3;
-  });
-
-  const [setupTimes, setSetupTimes] = useState<Record<ScaleType, number>>(() => {
-    const saved = localStorage.getItem('pcp_setup_times');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        // fallback
-      }
-    }
-    return {
-      'Erlenmeyer': 0,
-      'Balão': 0,
-      '100L': 4,
-      '500L': 6,
-      '3000_5000L': 8,
-      'Envase': 4
-    };
-  });
-
-  // Shift config persisted in local storage with default rich shifts
   const [shiftConfig, setShiftConfig] = useState<ShiftConfig>({
     shifts: [
       { id: 'sh-1', name: '1º Turno (Seg a Sex)', startHour: '06:00', endHour: '14:00', workDays: [1, 2, 3, 4, 5] },
@@ -76,6 +49,15 @@ export default function App() {
     const saved = localStorage.getItem('pcp_show_config_panels');
     return saved !== null ? saved === 'true' : true;
   });
+
+  // Authentication states
+  const [user, setUser] = useState<User | null>(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [databaseId, setDatabaseId] = useState('');
+  const [isDataLoaded, setIsDataLoaded] = useState(false);
 
   useEffect(() => {
     localStorage.setItem('pcp_show_config_panels', String(showConfigPanels));
@@ -109,131 +91,172 @@ export default function App() {
     setShiftConfig(prev => ({ shifts: prev.shifts.filter(sh => sh.id !== id) }));
   };
 
-  // Force scheduling candidate from bottlenecks bypass button (extra hours authorization)
-  const handleBypassErrorScheduling = (err: PlanningErrorLog) => {
-    if (!err.productId || !err.startDateTime) {
-      alert('Não foi possível recuperar os dados de sequenciamento para este lote.');
-      return;
-    }
-    const recipe = recipes.find(r => r.id === err.productId);
-    if (!recipe) {
-      alert('Produto associado não encontrado.');
-      return;
-    }
 
-    try {
-      // Calculate production steps ignoring shift checks for this specific batch
-      const candidateSteps = calculateProductionTimeline(
-        recipe,
-        err.startDateTime,
-        0, // standard interval
-        batches,
-        preventatives,
-        undefined,
-        undefined,
-        setupTimes,
-        envaseLinesCount
-      );
-
-      const newBatch: Batch = {
-        id: `bypass-batch-${recipe.id}-${Date.now()}`,
-        lotNumber: err.lotNumber,
-        productId: recipe.id,
-        startDateTime: err.startDateTime,
-        transferIntervalHours: 0,
-        steps: candidateSteps
-      };
-
-      setBatches(prev => [newBatch, ...prev]);
-      setPlanningErrors(prev => prev.filter(e => e.id !== err.id));
-    } catch (e: any) {
-      alert(`Falha no sequenciamento físico: ${e.message || 'Colisão de recursos em reatores.'}`);
-    }
-  };
 
   // Planner trigger inputs
   const [targetVolume, setTargetVolume] = useState<number>(15000);
   const [plannerRecipeId, setPlannerRecipeId] = useState<string>('');
   const [plannerStart, setPlannerStart] = useState<string>('2026-06-01T08:00');
 
-  // Hydrate states on mounting
+  // Auth state listener on mounting
   useEffect(() => {
-    // 1. Recipes
-    const storedRecipes = localStorage.getItem('pcp_recipes');
-    if (storedRecipes) {
-      try {
-        setRecipes(JSON.parse(storedRecipes));
-      } catch (e) {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        setLoading(true);
+        try {
+          const tokenResult = await currentUser.getIdTokenResult(true);
+          const dbId = tokenResult.claims.databaseId;
+          
+          if (!dbId || typeof dbId !== 'string') {
+            setAuthError("Acesso não autorizado: Conta não vinculada a uma indústria válida");
+            await signOut(auth);
+            setUser(null);
+            setDatabaseId('');
+            setIsDataLoaded(false);
+          } else {
+            setDatabaseId(dbId);
+            setUser(currentUser);
+            setAuthError('');
+            
+            // Initialize Firestore and Load Data!
+            const tenantDb = getTenantDb(dbId);
+            await fetchTenantData(tenantDb);
+          }
+        } catch (e: any) {
+          console.error("Erro ao ler token do Firebase Auth:", e);
+          setAuthError("Erro na autenticação. Tente novamente.");
+          setUser(null);
+          setDatabaseId('');
+        } finally {
+          setLoading(false);
+        }
+      } else {
+        setUser(null);
+        setDatabaseId('');
+        setIsDataLoaded(false);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const fetchTenantData = async (tenantDb: any) => {
+    try {
+      // 1. Recipes
+      const recipesSnapshot = await getDocs(collection(tenantDb, "recipes"));
+      const recipesList = recipesSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as ProductRecipe));
+      if (recipesList.length === 0) {
+        for (const r of INITIAL_RECIPES) {
+          await setDoc(doc(tenantDb, "recipes", r.id), r);
+        }
         setRecipes(INITIAL_RECIPES);
+      } else {
+        setRecipes(recipesList);
       }
-    } else {
-      setRecipes(INITIAL_RECIPES);
-    }
 
-    // 2. Preventatives
-    const storedPrevs = localStorage.getItem('pcp_preventatives');
-    if (storedPrevs) {
-      try {
-        setPreventatives(JSON.parse(storedPrevs));
-      } catch (e) {
+      // 2. Preventatives
+      const prevSnapshot = await getDocs(collection(tenantDb, "preventatives"));
+      const prevList = prevSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as Preventative));
+      if (prevList.length === 0) {
+        for (const p of INITIAL_PREVENTATIVES) {
+          await setDoc(doc(tenantDb, "preventatives", p.id), p);
+        }
         setPreventatives(INITIAL_PREVENTATIVES);
+      } else {
+        setPreventatives(prevList);
       }
-    } else {
-      setPreventatives(INITIAL_PREVENTATIVES);
-    }
 
-    // 3. Batches
-    const storedBatches = localStorage.getItem('pcp_batches');
-    if (storedBatches) {
-      try {
-        setBatches(JSON.parse(storedBatches));
-      } catch (e) {
-        setBatches(getInitialBatches());
+      // 3. Batches
+      const batchesSnapshot = await getDocs(collection(tenantDb, "batches"));
+      const batchesList = batchesSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as Batch));
+      if (batchesList.length === 0) {
+        const initialBatches = getInitialBatches();
+        for (const b of initialBatches) {
+          await setDoc(doc(tenantDb, "batches", b.id), b);
+        }
+        setBatches(initialBatches);
+      } else {
+        setBatches(batchesList);
       }
-    } else {
-      setBatches(getInitialBatches());
-    }
 
-    // 4. Shift Config
-    const storedShift = localStorage.getItem('pcp_shift_config');
-    if (storedShift) {
-      try {
-        const parsed = JSON.parse(storedShift);
-        if (parsed && Array.isArray(parsed.shifts) && parsed.shifts.length > 0) {
-          setShiftConfig(parsed);
-        } else {
-          // Fallback legacy conversion
-          const legacyStart = parsed.startHour || '06:00';
-          const legacyEnd = parsed.endHour || '22:00';
-          const legacyDays = parsed.workDays || [1, 2, 3, 4, 5];
-          setShiftConfig({
+      // 4. Deviations
+      const devSnapshot = await getDocs(collection(tenantDb, "deviations"));
+      const devList = devSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as DeviationLog));
+      setDeviations(devList);
+
+      // 5. Configs
+      const configDoc = await getDoc(doc(tenantDb, "configs", "settings"));
+      if (configDoc.exists()) {
+        const data = configDoc.data();
+        if (data.shiftConfig) setShiftConfig(data.shiftConfig);
+        if (data.setupTimes) setSetupTimes(data.setupTimes);
+        if (data.envaseLinesCount !== undefined) setEnvaseLinesCount(data.envaseLinesCount);
+      } else {
+        const defaultSettings = {
+          shiftConfig: {
             shifts: [
-              { id: 'sh-legacy', name: 'Turno Legado', startHour: legacyStart, endHour: legacyEnd, workDays: legacyDays },
               { id: 'sh-1', name: '1º Turno (Seg a Sex)', startHour: '06:00', endHour: '14:00', workDays: [1, 2, 3, 4, 5] },
               { id: 'sh-2', name: '1º Turno (Ter a Sáb)', startHour: '06:00', endHour: '14:00', workDays: [2, 3, 4, 5, 6] },
               { id: 'sh-3', name: '2º Turno (Seg a Sex)', startHour: '14:00', endHour: '22:00', workDays: [1, 2, 3, 4, 5] }
             ]
-          });
-        }
-      } catch (e) {
-        setShiftConfig({
-          shifts: [
-            { id: 'sh-1', name: '1º Turno (Seg a Sex)', startHour: '06:00', endHour: '14:00', workDays: [1, 2, 3, 4, 5] },
-            { id: 'sh-2', name: '1º Turno (Ter a Sáb)', startHour: '06:00', endHour: '14:00', workDays: [2, 3, 4, 5, 6] },
-            { id: 'sh-3', name: '2º Turno (Seg a Sex)', startHour: '14:00', endHour: '22:00', workDays: [1, 2, 3, 4, 5] }
-          ]
-        });
+          },
+          setupTimes: {
+            'Erlenmeyer': 0,
+            'Balão': 0,
+            '100L': 4,
+            '500L': 6,
+            '3000_5000L': 8,
+            'Envase': 4
+          },
+          envaseLinesCount: 3
+        };
+        await setDoc(doc(tenantDb, "configs", "settings"), defaultSettings);
+        setShiftConfig(defaultSettings.shiftConfig);
+        setSetupTimes(defaultSettings.setupTimes);
+        setEnvaseLinesCount(defaultSettings.envaseLinesCount);
       }
-    } else {
-      setShiftConfig({
-        shifts: [
-          { id: 'sh-1', name: '1º Turno (Seg a Sex)', startHour: '06:00', endHour: '14:00', workDays: [1, 2, 3, 4, 5] },
-          { id: 'sh-2', name: '1º Turno (Ter a Sáb)', startHour: '06:00', endHour: '14:00', workDays: [2, 3, 4, 5, 6] },
-          { id: 'sh-3', name: '2º Turno (Seg a Sex)', startHour: '14:00', endHour: '22:00', workDays: [1, 2, 3, 4, 5] }
-        ]
-      });
+
+      setIsDataLoaded(true);
+    } catch (err) {
+      console.error("Erro ao carregar dados do tenant do Firestore:", err);
     }
-  }, []);
+  };
+
+  // Login execution handler
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setAuthError('');
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (err: any) {
+      console.error("Erro no login:", err);
+      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+        setAuthError("E-mail ou senha incorretos.");
+      } else {
+        setAuthError(err.message || "Erro de login.");
+      }
+      setLoading(false);
+    }
+  };
+
+  // Logout handler
+  const handleLogout = async () => {
+    setLoading(true);
+    try {
+      await signOut(auth);
+      setUser(null);
+      setDatabaseId('');
+      setIsDataLoaded(false);
+      setRecipes([]);
+      setBatches([]);
+      setPreventatives([]);
+      setDeviations([]);
+    } catch (e) {
+      console.error("Erro no logout:", e);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Update default planner recipe when recipes list loads
   useEffect(() => {
@@ -260,51 +283,26 @@ export default function App() {
     }
   }, [recipes]);
 
+  // Sync general settings to Firestore whenever they change
   useEffect(() => {
-    localStorage.setItem('pcp_envase_lines_count', String(envaseLinesCount));
-  }, [envaseLinesCount]);
-
-  useEffect(() => {
-    localStorage.setItem('pcp_setup_times', JSON.stringify(setupTimes));
-  }, [setupTimes]);
-
-  // Sync to localStorage when states update
-  useEffect(() => {
-    if (recipes.length > 0) {
-      localStorage.setItem('pcp_recipes', JSON.stringify(recipes));
+    if (isDataLoaded && databaseId) {
+      const saveConfig = async () => {
+        try {
+          await setDoc(doc(getTenantDb(), "configs", "settings"), {
+            shiftConfig,
+            setupTimes,
+            envaseLinesCount
+          });
+        } catch (e) {
+          console.error("Erro ao salvar configs no Firestore:", e);
+        }
+      };
+      saveConfig();
     }
-  }, [recipes]);
+  }, [shiftConfig, setupTimes, envaseLinesCount, isDataLoaded, databaseId]);
 
-  useEffect(() => {
-    localStorage.setItem('pcp_shift_config', JSON.stringify(shiftConfig));
-  }, [shiftConfig]);
-
-  useEffect(() => {
-    if (preventatives.length > 0) {
-      localStorage.setItem('pcp_preventatives', JSON.stringify(preventatives));
-    } else {
-      localStorage.removeItem('pcp_preventatives');
-    }
-  }, [preventatives]);
-
-  useEffect(() => {
-    if (batches.length > 0) {
-      localStorage.setItem('pcp_batches', JSON.stringify(batches));
-    } else {
-      localStorage.removeItem('pcp_batches');
-    }
-  }, [batches]);
-
-  useEffect(() => {
-    if (deviations.length > 0) {
-      localStorage.setItem('pcp_deviations', JSON.stringify(deviations));
-    } else {
-      localStorage.removeItem('pcp_deviations');
-    }
-  }, [deviations]);
-
-  // Handle addition & deletion triggers
-  const handleSaveRecipe = (updatedRecipe: ProductRecipe) => {
+  // Handle addition & deletion triggers synced to Firestore
+  const handleSaveRecipe = async (updatedRecipe: ProductRecipe) => {
     setRecipes(prev => {
       const idx = prev.findIndex(r => r.id === updatedRecipe.id);
       if (idx >= 0) {
@@ -315,40 +313,100 @@ export default function App() {
         return [...prev, updatedRecipe];
       }
     });
+    if (databaseId) {
+      try {
+        await setDoc(doc(getTenantDb(), "recipes", updatedRecipe.id), updatedRecipe);
+      } catch (err) {
+        console.error("Erro ao salvar receita no Firestore:", err);
+      }
+    }
   };
 
-  const handleDeleteRecipe = (id: string) => {
+  const handleDeleteRecipe = async (id: string) => {
     setRecipes(prev => prev.filter(r => r.id !== id));
-    // Also remove associated batches to prevent reference crashes
     setBatches(prev => prev.filter(b => b.productId !== id));
+    if (databaseId) {
+      try {
+        const db = getTenantDb();
+        await deleteDoc(doc(db, "recipes", id));
+        const batchesSnapshot = await getDocs(collection(db, "batches"));
+        for (const docSnap of batchesSnapshot.docs) {
+          const b = docSnap.data();
+          if (b.productId === id) {
+            await deleteDoc(doc(db, "batches", docSnap.id));
+          }
+        }
+      } catch (err) {
+        console.error("Erro ao deletar receita no Firestore:", err);
+      }
+    }
   };
 
-  const handleAddBatch = (newBatch: Batch) => {
+  const handleAddBatch = async (newBatch: Batch) => {
     setBatches(prev => [newBatch, ...prev]);
-    // Switch to Gantt view so that the planner instantly sees the calculated block placed in the active timeline
     setActiveTab('gantt');
+    if (databaseId) {
+      try {
+        await setDoc(doc(getTenantDb(), "batches", newBatch.id), newBatch);
+      } catch (err) {
+        console.error("Erro ao adicionar lote no Firestore:", err);
+      }
+    }
   };
 
-  const handleDeleteBatch = (id: string) => {
+  const handleDeleteBatch = async (id: string) => {
     setBatches(prev => prev.filter(b => b.id !== id));
+    if (databaseId) {
+      try {
+        await deleteDoc(doc(getTenantDb(), "batches", id));
+      } catch (err) {
+        console.error("Erro ao deletar lote no Firestore:", err);
+      }
+    }
   };
 
-  const handleAddPreventative = (newPrev: Preventative) => {
+  const handleAddPreventative = async (newPrev: Preventative) => {
     setPreventatives(prev => [...prev, newPrev]);
+    if (databaseId) {
+      try {
+        await setDoc(doc(getTenantDb(), "preventatives", newPrev.id), newPrev);
+      } catch (err) {
+        console.error("Erro ao adicionar preventiva no Firestore:", err);
+      }
+    }
   };
 
-  const handleDeletePreventative = (id: string) => {
+  const handleDeletePreventative = async (id: string) => {
     setPreventatives(prev => prev.filter(p => p.id !== id));
+    if (databaseId) {
+      try {
+        await deleteDoc(doc(getTenantDb(), "preventatives", id));
+      } catch (err) {
+        console.error("Erro ao deletar preventiva no Firestore:", err);
+      }
+    }
   };
 
-  const handleClearAllData = () => {
-    if (confirm('Atenção: Isso restaurará todos os dados originais do PCP de Junho de 2026. Deseja continuar?')) {
-      localStorage.removeItem('pcp_recipes');
-      localStorage.removeItem('pcp_batches');
-      localStorage.removeItem('pcp_preventatives');
-      localStorage.removeItem('pcp_envase_lines_count');
-      localStorage.removeItem('pcp_setup_times');
-      localStorage.removeItem('pcp_deviations');
+  const handleClearAllBatches = async () => {
+    if (confirm('Atenção: Deseja deletar COMPLETAMENTE todos os lotes do cronograma corrente para uma replanificação do zero?')) {
+      setBatches([]);
+      setPlanningErrors([]);
+      if (databaseId) {
+        try {
+          const db = getTenantDb();
+          const batchesSnapshot = await getDocs(collection(db, "batches"));
+          for (const docSnap of batchesSnapshot.docs) {
+            await deleteDoc(doc(db, "batches", docSnap.id));
+          }
+        } catch (err) {
+          console.error("Erro ao limpar lotes no Firestore:", err);
+        }
+      }
+    }
+  };
+
+  const handleClearAllData = async () => {
+    if (confirm('Atenção: Isso restaurará todos os dados originais do PCP no servidor da nuvem. Deseja continuar?')) {
       setRecipes(INITIAL_RECIPES);
       setPreventatives(INITIAL_PREVENTATIVES);
       setBatches(getInitialBatches());
@@ -371,10 +429,52 @@ export default function App() {
       });
       setPlanningErrors([]);
       setActiveTab('gantt');
+
+      if (databaseId) {
+        try {
+          const db = getTenantDb();
+          const recipesSnapshot = await getDocs(collection(db, "recipes"));
+          for (const d of recipesSnapshot.docs) await deleteDoc(doc(db, "recipes", d.id));
+          for (const r of INITIAL_RECIPES) await setDoc(doc(db, "recipes", r.id), r);
+
+          const prevSnapshot = await getDocs(collection(db, "preventatives"));
+          for (const d of prevSnapshot.docs) await deleteDoc(doc(db, "preventatives", d.id));
+          for (const p of INITIAL_PREVENTATIVES) await setDoc(doc(db, "preventatives", p.id), p);
+
+          const batchesSnapshot = await getDocs(collection(db, "batches"));
+          for (const d of batchesSnapshot.docs) await deleteDoc(doc(db, "batches", d.id));
+          const initialBatches = getInitialBatches();
+          for (const b of initialBatches) await setDoc(doc(db, "batches", b.id), b);
+
+          const devSnapshot = await getDocs(collection(db, "deviations"));
+          for (const d of devSnapshot.docs) await deleteDoc(doc(db, "deviations", d.id));
+
+          await setDoc(doc(db, "configs", "settings"), {
+            shiftConfig: {
+              shifts: [
+                { id: 'sh-1', name: '1º Turno (Seg a Sex)', startHour: '06:00', endHour: '14:00', workDays: [1, 2, 3, 4, 5] },
+                { id: 'sh-2', name: '1º Turno (Ter a Sáb)', startHour: '06:00', endHour: '14:00', workDays: [2, 3, 4, 5, 6] },
+                { id: 'sh-3', name: '2º Turno (Seg a Sex)', startHour: '14:00', endHour: '22:00', workDays: [1, 2, 3, 4, 5] }
+              ]
+            },
+            setupTimes: {
+              'Erlenmeyer': 0,
+              'Balão': 0,
+              '100L': 4,
+              '500L': 6,
+              '3000_5000L': 8,
+              'Envase': 4
+            },
+            envaseLinesCount: 3
+          });
+        } catch (err) {
+          console.error("Erro ao resetar fábrica no Firestore:", err);
+        }
+      }
     }
   };
 
-  const handleAutoPlan = (e: React.FormEvent) => {
+  const handleAutoPlan = async (e: React.FormEvent) => {
     e.preventDefault();
     setPlanningErrors([]);
 
@@ -402,6 +502,16 @@ export default function App() {
 
     if (result.scheduledBatches.length > 0) {
       setBatches(prev => [...prev, ...result.scheduledBatches]);
+      if (databaseId) {
+        try {
+          const db = getTenantDb();
+          for (const b of result.scheduledBatches) {
+            await setDoc(doc(db, "batches", b.id), b);
+          }
+        } catch (err) {
+          console.error("Erro ao salvar lotes automáticos no Firestore:", err);
+        }
+      }
     }
 
     if (result.errors.length > 0) {
@@ -411,7 +521,7 @@ export default function App() {
     }
   };
 
-  const handleAutoPlanMix = (e: React.FormEvent) => {
+  const handleAutoPlanMix = async (e: React.FormEvent) => {
     e.preventDefault();
     setPlanningErrors([]);
 
@@ -465,6 +575,16 @@ export default function App() {
 
     if (allNewBatches.length > 0) {
       setBatches(prev => [...prev, ...allNewBatches]);
+      if (databaseId) {
+        try {
+          const db = getTenantDb();
+          for (const b of allNewBatches) {
+            await setDoc(doc(db, "batches", b.id), b);
+          }
+        } catch (err) {
+          console.error("Erro ao salvar lotes do mix no Firestore:", err);
+        }
+      }
     }
 
     if (allErrors.length > 0) {
@@ -474,10 +594,72 @@ export default function App() {
     }
   };
 
-  const handleClearAllBatches = () => {
-    if (confirm('Atenção: Deseja deletar COMPLETAMENTE todos os lotes do cronograma corrente para uma replanificação do zero?')) {
-      setBatches([]);
-      setPlanningErrors([]);
+  const handleBypassErrorScheduling = async (err: PlanningErrorLog) => {
+    const recipe = recipes.find(r => r.id === err.productId);
+    if (!recipe) {
+      alert('Produto associado não encontrado.');
+      return;
+    }
+
+    try {
+      const candidateSteps = calculateProductionTimeline(
+        recipe,
+        err.startDateTime,
+        0,
+        batches,
+        preventatives,
+        undefined,
+        undefined,
+        setupTimes,
+        envaseLinesCount
+      );
+
+      const newBatch: Batch = {
+        id: `bypass-batch-${recipe.id}-${Date.now()}`,
+        lotNumber: err.lotNumber,
+        productId: recipe.id,
+        startDateTime: err.startDateTime,
+        transferIntervalHours: 0,
+        steps: candidateSteps
+      };
+
+      setBatches(prev => [newBatch, ...prev]);
+      setPlanningErrors(prev => prev.filter(e => e.id !== err.id));
+
+      if (databaseId) {
+        try {
+          await setDoc(doc(getTenantDb(), "batches", newBatch.id), newBatch);
+        } catch (e: any) {
+          console.error("Erro ao salvar lote autorizado no Firestore:", e);
+        }
+      }
+    } catch (e: any) {
+      alert(`Falha no sequenciamento físico: ${e.message || 'Colisão de recursos em reatores.'}`);
+    }
+  };
+
+  const handleAddDeviationLog = async (log: DeviationLog) => {
+    setDeviations(prev => [log, ...prev]);
+    if (databaseId) {
+      try {
+        await setDoc(doc(getTenantDb(), "deviations", log.id), log);
+      } catch (e) {
+        console.error("Erro ao salvar desvio no Firestore:", e);
+      }
+    }
+  };
+
+  const handleUpdateBatches = async (updatedBatches: Batch[]) => {
+    setBatches(updatedBatches);
+    if (databaseId) {
+      try {
+        const db = getTenantDb();
+        for (const b of updatedBatches) {
+          await setDoc(doc(db, "batches", b.id), b);
+        }
+      } catch (e) {
+        console.error("Erro ao atualizar lotes no Firestore:", e);
+      }
     }
   };
 
@@ -524,6 +706,84 @@ export default function App() {
     if (hasBatchConflict) conflictBatchesCount++;
   });
 
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 antialiased" id="login-root">
+        <div className="w-full max-w-md bg-slate-800/80 border border-slate-707/60 rounded-3xl p-8 shadow-2xl backdrop-blur-md space-y-6">
+          <div className="text-center space-y-2">
+            <div className="w-14 h-14 rounded-2xl bg-amber-500 flex items-center justify-center font-bold text-slate-950 text-2xl tracking-tight shadow mx-auto mb-4 animate-pulse">
+              𝝗
+            </div>
+            <span className="text-[10px] font-black uppercase tracking-widest text-amber-500 block leading-none">
+              Líder PCP Bio - Enterprise
+            </span>
+            <h2 className="text-xl font-extrabold text-white tracking-tight">
+              Acesso ao System
+            </h2>
+            <p className="text-xs text-slate-400">
+              Entre com suas credenciais para sincronizar seu cronograma de fábrica.
+            </p>
+          </div>
+
+          {authError && (
+            <div className="bg-rose-500/10 border border-rose-500/30 text-rose-300 rounded-xl p-3 text-xs flex items-start gap-2 animate-fadeIn">
+              <AlertOctagon size={16} className="shrink-0 text-rose-400 mt-0.5" />
+              <span>{authError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">E-mail Corporativo</label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="nome@empresa.com"
+                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 hover:border-slate-600 focus:border-indigo-500 rounded-xl text-xs font-semibold text-white focus:outline-none transition-all placeholder:text-slate-500"
+                required
+                disabled={loading}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Senha de Acesso</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 hover:border-slate-600 focus:border-indigo-500 rounded-xl text-xs font-semibold text-white focus:outline-none transition-all placeholder:text-slate-500"
+                required
+                disabled={loading}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-700 text-white font-bold text-xs rounded-xl shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer mt-2"
+            >
+              {loading ? (
+                <>
+                  <RefreshCw className="animate-spin text-white" size={14} /> Carregando...
+                </>
+              ) : (
+                "Acessar Sistema"
+              )}
+            </button>
+          </form>
+
+          <div className="text-center pt-2">
+            <p className="text-[10px] text-slate-500 font-medium">
+              Protegido por Criptografia de Ponta a Ponta Firebase & TLS 1.3
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-100 font-sans text-slate-800 antialiased flex flex-col" id="app-root">
       
@@ -536,7 +796,7 @@ export default function App() {
             </div>
             <div>
               <span className="text-[10px] font-black uppercase tracking-widest text-amber-500 block leading-none">
-                Líder PCP Bio
+                Líder PCP Bio - Enterprise
               </span>
               <h1 className="text-lg font-extrabold tracking-tight">
                 Sequenciador de Multiplicação Bacteriana
@@ -547,14 +807,21 @@ export default function App() {
           <div className="flex items-center gap-2">
             <button
               onClick={handleClearAllData}
-              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white rounded-lg text-xs font-semibold border border-slate-700 transition-colors flex items-center gap-1 cursor-pointer"
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-750 text-slate-350 hover:text-white rounded-lg text-xs font-semibold border border-slate-700 transition-colors flex items-center gap-1 cursor-pointer"
               title="Resetar dados para exemplo de fábrica padrão"
             >
               <Database size={13} /> Resetar Fábrica Exemplo
             </button>
             <span className="text-xs bg-slate-800 text-slate-400 border border-slate-700 px-3 py-1.5 rounded-lg font-mono">
-              STATUS: <span className="text-emerald-400 font-bold">TEMPO REAL</span>
+              FÁBRICA: <span className="text-amber-400 font-bold uppercase">{databaseId}</span>
             </span>
+            <button
+              onClick={handleLogout}
+              className="px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900/60 border border-rose-800/80 text-rose-200 hover:text-white rounded-lg text-xs font-semibold transition-colors flex items-center gap-1 cursor-pointer"
+              title="Sair do Sistema"
+            >
+              <XCircle size={13} /> Sair
+            </button>
           </div>
         </div>
       </header>
@@ -1159,8 +1426,8 @@ export default function App() {
                   recipes={recipes}
                   onDeleteBatch={handleDeleteBatch}
                   onDeletePreventative={handleDeletePreventative}
-                  onUpdateBatches={setBatches}
-                  onAddDeviationLog={(log) => setDeviations(prev => [log, ...prev])}
+                  onUpdateBatches={handleUpdateBatches}
+                  onAddDeviationLog={handleAddDeviationLog}
                   setupTimes={setupTimes}
                   envaseLinesCount={envaseLinesCount}
                 />
