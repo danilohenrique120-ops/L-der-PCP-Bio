@@ -754,3 +754,157 @@ export function generateAutomaticPlanning(
     errors
   };
 }
+
+export interface StartTimeSuggestion {
+  startDateTime: string;
+  endDateTime: string;
+  volumeScheduled: number;
+  batchesScheduledCount: number;
+  hasErrors: boolean;
+  errorsCount: number;
+  requiresBypass: boolean;
+  errors: PlanningErrorLog[];
+}
+
+/**
+ * Sweeps the entire active month to find the best candidate start times for a campaign.
+ */
+export function findBestStartTimes(
+  year: number,
+  monthIndex: number,
+  campaignItems: { recipe: ProductRecipe; targetVolume: number }[],
+  existingBatches: Batch[],
+  preventatives: Preventative[],
+  shiftConfig: ShiftConfig,
+  setupTimes: Record<ScaleType, number>,
+  envaseLinesCount: number,
+  restrictToMonth: boolean
+): StartTimeSuggestion[] {
+  const suggestions: StartTimeSuggestion[] = [];
+  const targetMonthStartMs = new Date(year, monthIndex, 1, 0, 0, 0).getTime();
+  const targetMonthEndMs = new Date(year, monthIndex + 1, 0, 23, 59, 59).getTime();
+  
+  let leadTimeHours = 0;
+  if (campaignItems.length > 0) {
+    const recipe = campaignItems[0].recipe;
+    for (let i = 0; i < recipe.steps.length - 1; i++) {
+      leadTimeHours += recipe.steps[i].durationHours;
+    }
+    leadTimeHours += (recipe.steps.length - 2) * 2; // buffer transfer
+  }
+  if (leadTimeHours <= 0) leadTimeHours = 96;
+
+  const sweepStartMs = restrictToMonth 
+    ? targetMonthStartMs - leadTimeHours * 60 * 60 * 1000 
+    : targetMonthStartMs;
+
+  const testPoints: Date[] = [];
+  let currentTest = new Date(sweepStartMs);
+  currentTest.setMinutes(0, 0, 0);
+  if (currentTest.getHours() % 2 !== 0) {
+    currentTest.setHours(currentTest.getHours() + 1);
+  }
+
+  while (currentTest.getTime() <= targetMonthEndMs) {
+    testPoints.push(new Date(currentTest.getTime()));
+    currentTest.setHours(currentTest.getHours() + 2);
+  }
+  
+  const formatLocal = (d: Date): string => {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  for (const point of testPoints) {
+    const startStr = formatLocal(point);
+    let activePool = [...existingBatches];
+    let totalVolumeScheduled = 0;
+    let totalBatchesScheduled = 0;
+    let totalErrors: PlanningErrorLog[] = [];
+    let maxEndMs = new Date(startStr).getTime();
+    
+    for (const item of campaignItems) {
+      const result = generateAutomaticPlanning(
+        item.recipe,
+        item.targetVolume,
+        startStr,
+        activePool,
+        preventatives,
+        shiftConfig,
+        setupTimes,
+        envaseLinesCount
+      );
+      
+      let batchesToCount = result.scheduledBatches;
+      if (restrictToMonth) {
+        batchesToCount = result.scheduledBatches.filter(b => {
+          const envaseStep = b.steps.find(s => s.scaleType === 'Envase');
+          if (!envaseStep) return false;
+          const envaseStartMs = new Date(envaseStep.startDateTime).getTime();
+          return envaseStartMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
+        });
+      }
+      
+      if (batchesToCount.length > 0) {
+        totalBatchesScheduled += batchesToCount.length;
+        totalVolumeScheduled += batchesToCount.length * item.recipe.yieldPerBatch;
+        activePool.push(...batchesToCount);
+        
+        batchesToCount.forEach(b => {
+          b.steps.forEach(s => {
+            const t = new Date(s.endDateTime).getTime();
+            if (t > maxEndMs) maxEndMs = t;
+          });
+        });
+      }
+      
+      if (result.errors.length > 0) {
+        const filteredErrors = result.errors.filter(err => {
+          if (!err.startDateTime) return true;
+          const errStartMs = new Date(err.startDateTime).getTime();
+          return !restrictToMonth || (errStartMs >= targetMonthStartMs && errStartMs <= targetMonthEndMs);
+        });
+        totalErrors.push(...filteredErrors);
+      }
+    }
+    
+    if (totalBatchesScheduled > 0) {
+      const endStr = formatLocal(new Date(maxEndMs));
+      const requiresBypass = totalErrors.some(e => e.canBypass);
+      
+      suggestions.push({
+        startDateTime: startStr,
+        endDateTime: endStr,
+        volumeScheduled: totalVolumeScheduled,
+        batchesScheduledCount: totalBatchesScheduled,
+        hasErrors: totalErrors.length > 0,
+        errorsCount: totalErrors.length,
+        requiresBypass,
+        errors: totalErrors
+      });
+    }
+  }
+  
+  suggestions.sort((a, b) => {
+    if (b.volumeScheduled !== a.volumeScheduled) {
+      return b.volumeScheduled - a.volumeScheduled;
+    }
+    if (a.errorsCount !== b.errorsCount) {
+      return a.errorsCount - b.errorsCount;
+    }
+    return new Date(a.endDateTime).getTime() - new Date(b.endDateTime).getTime();
+  });
+  
+  const uniqueSuggestions: StartTimeSuggestion[] = [];
+  const seenStarts = new Set<string>();
+  
+  for (const sug of suggestions) {
+    if (!seenStarts.has(sug.startDateTime)) {
+      seenStarts.add(sug.startDateTime);
+      uniqueSuggestions.push(sug);
+      if (uniqueSuggestions.length >= 5) break;
+    }
+  }
+  
+  return uniqueSuggestions;
+}

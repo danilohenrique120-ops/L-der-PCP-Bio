@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { ProductRecipe, Batch, Preventative, COLOR_OPTIONS, ScaleType, ShiftConfig, PlanningErrorLog, Shift, DeviationLog } from './types';
 import { INITIAL_RECIPES, INITIAL_PREVENTATIVES, getInitialBatches } from './data/mockData';
-import { areIntervalsOverlapping, generateAutomaticPlanning, calculateProductionTimeline, formatFullDate } from './utils/timeline';
+import { areIntervalsOverlapping, generateAutomaticPlanning, calculateProductionTimeline, formatFullDate, findBestStartTimes, StartTimeSuggestion } from './utils/timeline';
 import GanttTimeline from './components/GanttTimeline';
 import { User, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
 import { collection, getDocs, doc, setDoc, getDoc, deleteDoc } from "firebase/firestore";
@@ -58,6 +58,13 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [databaseId, setDatabaseId] = useState('');
   const [isDataLoaded, setIsDataLoaded] = useState(false);
+
+  // Start Time Optimization states
+  const [showAnalyseModal, setShowAnalyseModal] = useState<boolean>(false);
+  const [isAnalysing, setIsAnalysing] = useState<boolean>(false);
+  const [analyseResults, setAnalyseResults] = useState<StartTimeSuggestion[]>([]);
+  const [analyseMetaVolume, setAnalyseMetaVolume] = useState<number>(0);
+  const [restrictToMonth, setRestrictToMonth] = useState<boolean>(false);
 
   useEffect(() => {
     localStorage.setItem('pcp_show_config_panels', String(showConfigPanels));
@@ -663,6 +670,212 @@ export default function App() {
     }
   };
 
+  const performAnalysis = (restrictValue: boolean) => {
+    let items: { recipe: ProductRecipe; targetVolume: number }[] = [];
+    
+    if (planningModeTab === 'single') {
+      const recipe = recipes.find(r => r.id === plannerRecipeId);
+      if (!recipe) return;
+      if (targetVolume <= 0) return;
+      items.push({ recipe, targetVolume });
+    } else {
+      const selectedItems = Object.entries(mixConfig)
+        .map(([productId, cfg]) => {
+          const config = cfg as { enabled: boolean; volume: number; priority: number };
+          return {
+            productId,
+            enabled: config?.enabled || false,
+            volume: config?.volume || 0,
+            priority: config?.priority || 1
+          };
+        })
+        .filter(item => item.enabled && item.volume > 0)
+        .sort((a, b) => a.priority - b.priority);
+
+      selectedItems.forEach(item => {
+        const recipe = recipes.find(r => r.id === item.productId);
+        if (recipe) items.push({ recipe, targetVolume: item.volume });
+      });
+    }
+
+    setIsAnalysing(true);
+    setAnalyseResults([]);
+
+    setTimeout(() => {
+      try {
+        const startDate = new Date(plannerStart);
+        const year = startDate.getFullYear();
+        const monthIndex = startDate.getMonth();
+
+        const results = findBestStartTimes(
+          year,
+          monthIndex,
+          items,
+          batches,
+          preventatives,
+          shiftConfig,
+          setupTimes,
+          envaseLinesCount,
+          restrictValue
+        );
+
+        setAnalyseResults(results);
+      } catch (err) {
+        console.error("Erro na varredura de início do PCP:", err);
+      } finally {
+        setIsAnalysing(false);
+      }
+    }, 100);
+  };
+
+  const handleAnalyseBestStart = () => {
+    let items: { recipe: ProductRecipe; targetVolume: number }[] = [];
+    
+    if (planningModeTab === 'single') {
+      const recipe = recipes.find(r => r.id === plannerRecipeId);
+      if (!recipe) {
+        alert('Por favor, selecione uma receita de produto válida.');
+        return;
+      }
+      if (targetVolume <= 0) {
+        alert('Insira uma meta de volume maior que zero.');
+        return;
+      }
+      items.push({ recipe, targetVolume });
+      setAnalyseMetaVolume(targetVolume);
+    } else {
+      const selectedItems = Object.entries(mixConfig)
+        .map(([productId, cfg]) => {
+          const config = cfg as { enabled: boolean; volume: number; priority: number };
+          return {
+            productId,
+            enabled: config?.enabled || false,
+            volume: config?.volume || 0,
+            priority: config?.priority || 1
+          };
+        })
+        .filter(item => item.enabled && item.volume > 0);
+
+      if (selectedItems.length === 0) {
+        alert('Selecione pelo menos um produto do mix com volume maior que zero.');
+        return;
+      }
+
+      let mixTotalVolume = 0;
+      selectedItems.forEach(item => {
+        mixTotalVolume += item.volume;
+      });
+      setAnalyseMetaVolume(mixTotalVolume);
+    }
+
+    setShowAnalyseModal(true);
+    performAnalysis(restrictToMonth);
+  };
+
+  const handleToggleRestrict = (checked: boolean) => {
+    setRestrictToMonth(checked);
+    performAnalysis(checked);
+  };
+
+  const handleApplySuggestion = async (sug: StartTimeSuggestion) => {
+    setPlannerStart(sug.startDateTime);
+    setShowAnalyseModal(false);
+
+    let items: { recipe: ProductRecipe; targetVolume: number }[] = [];
+    if (planningModeTab === 'single') {
+      const recipe = recipes.find(r => r.id === plannerRecipeId);
+      if (recipe) items.push({ recipe, targetVolume });
+    } else {
+      const selectedItems = Object.entries(mixConfig)
+        .map(([productId, cfg]) => {
+          const config = cfg as { enabled: boolean; volume: number; priority: number };
+          return {
+            productId,
+            enabled: config?.enabled || false,
+            volume: config?.volume || 0,
+            priority: config?.priority || 1
+          };
+        })
+        .filter(item => item.enabled && item.volume > 0)
+        .sort((a, b) => a.priority - b.priority);
+
+      selectedItems.forEach(item => {
+        const recipe = recipes.find(r => r.id === item.productId);
+        if (recipe) items.push({ recipe, targetVolume: item.volume });
+      });
+    }
+
+    let activePool = [...batches];
+    let allNewBatches: Batch[] = [];
+    let allErrors: PlanningErrorLog[] = [];
+
+    const targetDate = new Date(plannerStart);
+    const monthIndex = targetDate.getMonth();
+    const year = targetDate.getFullYear();
+    const targetMonthStartMs = new Date(year, monthIndex, 1, 0, 0, 0).getTime();
+    const targetMonthEndMs = new Date(year, monthIndex + 1, 0, 23, 59, 59).getTime();
+
+    items.forEach(item => {
+      const result = generateAutomaticPlanning(
+        item.recipe,
+        item.targetVolume,
+        sug.startDateTime,
+        activePool,
+        preventatives,
+        shiftConfig,
+        setupTimes,
+        envaseLinesCount
+      );
+
+      let batchesToSave = result.scheduledBatches;
+      if (restrictToMonth) {
+        batchesToSave = result.scheduledBatches.filter(b => {
+          const envaseStep = b.steps.find(s => s.scaleType === 'Envase');
+          if (!envaseStep) return false;
+          const envaseStartMs = new Date(envaseStep.startDateTime).getTime();
+          return envaseStartMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
+        });
+      }
+
+      if (batchesToSave.length > 0) {
+        allNewBatches.push(...batchesToSave);
+        activePool.push(...batchesToSave);
+      }
+      
+      if (result.errors.length > 0) {
+        const filteredErrors = result.errors.filter(err => {
+          if (!err.startDateTime) return true;
+          const errStartMs = new Date(err.startDateTime).getTime();
+          return !restrictToMonth || (errStartMs >= targetMonthStartMs && errStartMs <= targetMonthEndMs);
+        });
+        allErrors.push(...filteredErrors);
+      }
+    });
+
+    if (allNewBatches.length > 0) {
+      setBatches(prev => [...prev, ...allNewBatches]);
+      if (databaseId) {
+        try {
+          const db = getTenantDb();
+          for (const b of allNewBatches) {
+            await setDoc(doc(db, "batches", b.id), b);
+          }
+        } catch (err) {
+          console.error("Erro ao salvar lotes no Firestore:", err);
+        }
+      }
+    }
+
+    if (allErrors.length > 0) {
+      setPlanningErrors(allErrors);
+    } else {
+      setPlanningErrors([]);
+    }
+
+    setActiveTab('gantt');
+    alert(`Planejamento gerado com sucesso para início em ${formatFullDate(sug.startDateTime)}!`);
+  };
+
   // real-time analysis KPIs
   const totalBatchesCount = batches.length;
   const preventativesCount = preventatives.length;
@@ -718,7 +931,7 @@ export default function App() {
               Líder PCP Bio - Enterprise
             </span>
             <h2 className="text-xl font-extrabold text-white tracking-tight">
-              Acesso ao System
+              Acesso ao Sistema
             </h2>
             <p className="text-xs text-slate-400">
               Entre com suas credenciais para sincronizar seu cronograma de fábrica.
@@ -740,7 +953,7 @@ export default function App() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="nome@empresa.com"
-                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 hover:border-slate-600 focus:border-indigo-500 rounded-xl text-xs font-semibold text-white focus:outline-none transition-all placeholder:text-slate-500"
+                className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 hover:border-slate-600 focus:ring-2 focus:ring-indigo-500 focus:border-transparent focus:outline-none rounded-xl text-xs font-semibold text-white transition-all placeholder:text-slate-500"
                 required
                 disabled={loading}
               />
@@ -753,7 +966,7 @@ export default function App() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
-                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 hover:border-slate-600 focus:border-indigo-500 rounded-xl text-xs font-semibold text-white focus:outline-none transition-all placeholder:text-slate-500"
+                className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 hover:border-slate-600 focus:ring-2 focus:ring-indigo-500 focus:border-transparent focus:outline-none rounded-xl text-xs font-semibold text-white transition-all placeholder:text-slate-500"
                 required
                 disabled={loading}
               />
@@ -1117,28 +1330,39 @@ export default function App() {
                   </div>
                   
                   {/* Selector de modo: Único ou Mix */}
-                  <div className="flex border-b border-slate-100 pb-2 mb-3 gap-4">
+                  <div className="flex border-b border-slate-100 pb-2 mb-3 gap-4 justify-between items-center">
+                    <div className="flex gap-4">
+                      <button
+                        type="button"
+                        onClick={() => setPlanningModeTab('single')}
+                        className={`text-xs font-bold pb-1 cursor-pointer transition-all ${
+                          planningModeTab === 'single'
+                            ? 'text-indigo-600 border-b-2 border-indigo-600'
+                            : 'text-slate-400 hover:text-slate-650'
+                        }`}
+                      >
+                        Lote Único
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPlanningModeTab('mix')}
+                        className={`text-xs font-bold pb-1 cursor-pointer transition-all ${
+                          planningModeTab === 'mix'
+                            ? 'text-indigo-600 border-b-2 border-indigo-600'
+                            : 'text-slate-400 hover:text-slate-650'
+                        }`}
+                      >
+                        Mix de Produtos
+                      </button>
+                    </div>
+
                     <button
                       type="button"
-                      onClick={() => setPlanningModeTab('single')}
-                      className={`text-xs font-bold pb-1 cursor-pointer transition-all ${
-                        planningModeTab === 'single'
-                          ? 'text-indigo-600 border-b-2 border-indigo-600'
-                          : 'text-slate-400 hover:text-slate-650'
-                      }`}
+                      onClick={handleAnalyseBestStart}
+                      className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-lg text-[10px] font-black tracking-tight transition-all flex items-center gap-1 shadow-2xs cursor-pointer"
+                      title="Encontrar a melhor data e horário de início no mês"
                     >
-                      Lote Único
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPlanningModeTab('mix')}
-                      className={`text-xs font-bold pb-1 cursor-pointer transition-all ${
-                        planningModeTab === 'mix'
-                          ? 'text-indigo-600 border-b-2 border-indigo-600'
-                          : 'text-slate-400 hover:text-slate-650'
-                      }`}
-                    >
-                      Mix de Produtos
+                      ⚡ Analisar Início
                     </button>
                   </div>
 
@@ -1607,6 +1831,173 @@ export default function App() {
       <footer className="bg-white border-t border-slate-200 py-4 px-4 text-center text-[11px] font-medium text-slate-400 shrink-0" id="global-footer">
         © 2026 Sequenciador Gantt PCP Biológico • Planejamento e Controle de Produção de Lotes de Multiplicação Bacteriana • DaniloHenrique120@gmail.com
       </footer>
+
+      {showAnalyseModal && (
+        <div className="fixed inset-0 bg-slate-950/65 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-fadeIn">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-2xl w-full max-h-[85vh] overflow-hidden flex flex-col">
+            {/* Header */}
+            <div className="p-6 border-b border-slate-100 flex items-center justify-between shrink-0 bg-slate-50">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-600 flex items-center justify-center shadow-3xs">
+                  <PlayCircle size={20} className="animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-slate-800 text-sm uppercase tracking-wider">Otimizador de Início Mensal (APS)</h3>
+                  <p className="text-[11px] text-slate-450 font-medium mt-0.5">
+                    Meta de volume analisada: <span className="font-bold text-slate-700">{analyseMetaVolume.toLocaleString('pt-BR')} L</span>
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowAnalyseModal(false)}
+                className="text-slate-400 hover:text-slate-650 p-1.5 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <XCircle size={20} />
+              </button>
+            </div>
+
+            {/* Toggle bar for Month boundary constraint */}
+            <div className="px-6 py-3 bg-indigo-50/50 border-b border-slate-100 flex items-center justify-between shrink-0 select-none">
+              <span className="text-[11px] text-slate-500 font-bold flex items-center gap-1.5">
+                <Sliders size={12} className="text-indigo-500" /> Restringir Produção ao Mês Selecionado:
+              </span>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={restrictToMonth}
+                  onChange={(e) => handleToggleRestrict(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
+                <span className="ml-2 text-[10px] font-bold text-slate-700 uppercase tracking-tight">
+                  {restrictToMonth ? 'Restringir ao Mês Ativo' : 'Sem Restrição (Campanha Completa)'}
+                </span>
+              </label>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 overflow-y-auto flex-1 space-y-4">
+              {isAnalysing ? (
+                <div className="flex flex-col items-center justify-center py-16 space-y-4">
+                  <div className="w-12 h-12 border-4 border-slate-200 border-t-indigo-600 rounded-full animate-spin"></div>
+                  <div className="text-center space-y-1">
+                    <p className="text-xs font-bold text-slate-700">Varrendo o calendário mensal...</p>
+                    <p className="text-[10px] text-slate-400 font-medium">Simulando reatores, setups de CIP, escalas e preventivas em tempo real.</p>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {analyseResults.length === 0 ? (
+                    <div className="p-4 bg-rose-50 border border-rose-150 rounded-xl text-center space-y-2">
+                      <p className="text-xs font-bold text-rose-700">Nenhum ponto de início viável encontrado</p>
+                      <p className="text-[10px] text-rose-600">
+                        O volume solicitado ou as restrições físicas (capacidade dos ativos ou preventivas) impedem que qualquer lote seja concluído neste mês.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3.5">
+                      <p className="text-[10px] uppercase tracking-wider font-extrabold text-slate-400 mb-2">Opções de Início Recomendadas:</p>
+                      {analyseResults.map((sug, idx) => {
+                        const percent = Math.min(100, Math.round((sug.volumeScheduled / analyseMetaVolume) * 100));
+                        const isPerfect = percent === 100;
+                        const missingVolume = analyseMetaVolume - sug.volumeScheduled;
+
+                        return (
+                          <div
+                            key={sug.startDateTime}
+                            className={`p-4 border rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 transition-all hover:shadow-xs ${
+                              idx === 0
+                                ? 'bg-indigo-50/20 border-indigo-150 shadow-3xs'
+                                : 'bg-slate-50/50 border-slate-200'
+                            }`}
+                          >
+                            <div className="space-y-3 flex-1">
+                              {/* Option badge */}
+                              <div className="flex items-center gap-2">
+                                <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                                  idx === 0
+                                    ? 'bg-indigo-600 text-white'
+                                    : 'bg-slate-200 text-slate-600'
+                                }`}>
+                                  {idx === 0 ? '🏆 Opção Ideal' : `${idx + 1}ª Sugestão`}
+                                </span>
+
+                                {sug.requiresBypass ? (
+                                  <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 flex items-center gap-0.5">
+                                    ⚠️ Horas Extras ({sug.errorsCount})
+                                  </span>
+                                ) : (
+                                  <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                                    ✅ Turno Padrão
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Dates */}
+                              <div className="grid grid-cols-2 gap-2 text-xs">
+                                <div>
+                                  <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider">Início</span>
+                                  <span className="font-bold text-slate-700">{formatFullDate(sug.startDateTime)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider">Previsão Fim</span>
+                                  <span className="font-bold text-slate-700">{formatFullDate(sug.endDateTime)}</span>
+                                </div>
+                              </div>
+
+                              {/* Progress bar */}
+                              <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[10px] font-bold text-slate-500">
+                                  <span>Volume Encaixado:</span>
+                                  <span className={isPerfect ? 'text-emerald-600' : 'text-slate-600'}>
+                                    {sug.volumeScheduled.toLocaleString('pt-BR')} L ({percent}%)
+                                  </span>
+                                </div>
+                                <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                                  <div
+                                    className={`h-full transition-all duration-500 ${isPerfect ? 'bg-emerald-500' : 'bg-amber-500'}`}
+                                    style={{ width: `${percent}%` }}
+                                  ></div>
+                                </div>
+                                {!isPerfect && (
+                                  <p className="text-[9px] font-semibold text-rose-500">
+                                    *Faltariam {missingVolume.toLocaleString('pt-BR')} L para atingir a meta neste período.
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            <button
+                              onClick={() => handleApplySuggestion(sug)}
+                              className={`py-2 px-4 rounded-xl text-xs font-bold transition-all shadow-3xs hover:scale-[1.02] active:scale-[0.98] cursor-pointer shrink-0 md:self-center self-end ${
+                                idx === 0
+                                  ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
+                                  : 'bg-white border border-slate-350 hover:bg-slate-50 text-slate-700'
+                              }`}
+                            >
+                              Aplicar e Agendar
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-slate-100 flex justify-end shrink-0 bg-slate-50">
+              <button
+                onClick={() => setShowAnalyseModal(false)}
+                className="px-4 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer shadow-3xs"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
