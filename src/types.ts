@@ -17,6 +17,17 @@ export interface ProductRecipe {
   color: string; // Tailwind color name like 'blue', 'emerald', 'amber', 'purple', 'rose', etc.
   yieldPerBatch: number; // Volume yielded per batch in liters/doses
   steps: StepDefinition[];
+  fermentationTimeHours?: number;
+  cipSipTimeHours?: number;
+  chargeDischargeTimeHours?: number;
+  batchVolume?: number;
+}
+
+export interface CapacityParams {
+  workingDaysPerMonth: number;
+  shiftsPerDay: number;
+  hoursPerShift: number;
+  maintenanceHoursPerMonth: number;
 }
 
 export interface Shift {

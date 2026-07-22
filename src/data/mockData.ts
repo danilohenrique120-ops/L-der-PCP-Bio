@@ -12,6 +12,10 @@ export const INITIAL_RECIPES: ProductRecipe[] = [
     name: 'SOJA (Inoculação Curta)',
     color: 'blue',
     yieldPerBatch: 5000,
+    fermentationTimeHours: 72,
+    cipSipTimeHours: 8,
+    chargeDischargeTimeHours: 4,
+    batchVolume: 5000,
     steps: [
       { id: 's1', scaleType: 'Erlenmeyer', durationHours: 24 },
       { id: 's2', scaleType: 'Balão', durationHours: 24 },
@@ -26,6 +30,10 @@ export const INITIAL_RECIPES: ProductRecipe[] = [
     name: 'PREMIER (Alta Densidade)',
     color: 'emerald',
     yieldPerBatch: 3000,
+    fermentationTimeHours: 96,
+    cipSipTimeHours: 12,
+    chargeDischargeTimeHours: 6,
+    batchVolume: 3000,
     steps: [
       { id: 'p1', scaleType: 'Erlenmeyer', durationHours: 32 },
       { id: 'p2', scaleType: 'Balão', durationHours: 24 },
@@ -40,6 +48,10 @@ export const INITIAL_RECIPES: ProductRecipe[] = [
     name: 'MILHO - POWER DRY',
     color: 'amber',
     yieldPerBatch: 4000,
+    fermentationTimeHours: 48,
+    cipSipTimeHours: 6,
+    chargeDischargeTimeHours: 3,
+    batchVolume: 4000,
     steps: [
       { id: 'm1', scaleType: 'Erlenmeyer', durationHours: 24 },
       { id: 'm2', scaleType: 'Balão', durationHours: 18 },

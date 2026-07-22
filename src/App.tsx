@@ -4,9 +4,9 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { ProductRecipe, Batch, Preventative, COLOR_OPTIONS, ScaleType, ShiftConfig, PlanningErrorLog, Shift, DeviationLog } from './types';
+import { ProductRecipe, Batch, Preventative, COLOR_OPTIONS, ScaleType, ShiftConfig, PlanningErrorLog, Shift, DeviationLog, CapacityParams } from './types';
 import { INITIAL_RECIPES, INITIAL_PREVENTATIVES, getInitialBatches } from './data/mockData';
-import { areIntervalsOverlapping, generateAutomaticPlanning, calculateProductionTimeline, formatFullDate, findBestStartTimes, StartTimeSuggestion } from './utils/timeline';
+import { areIntervalsOverlapping, generateAutomaticPlanning, calculateProductionTimeline, formatFullDate, findBestStartTimes, StartTimeSuggestion, getInoculationDateFromEnvaseStart } from './utils/timeline';
 import GanttTimeline from './components/GanttTimeline';
 import { User, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
 import { collection, getDocs, doc, setDoc, getDoc, deleteDoc } from "firebase/firestore";
@@ -18,8 +18,8 @@ import { AlertTriangle, Calendar, PlayCircle, Layers, ShieldX, HelpCircle, Alert
 import { getAssetsPool, normalizeAssetId } from './types';
 
 export default function App() {
-  // Tabs: 'gantt' | 'batch' | 'product' | 'preventatives' | 'deviations'
-  const [activeTab, setActiveTab] = useState<'gantt' | 'batch' | 'product' | 'preventatives' | 'deviations'>('gantt');
+  // Tabs: 'gantt' | 'batch' | 'product' | 'preventatives' | 'deviations' | 'capacity'
+  const [activeTab, setActiveTab] = useState<'gantt' | 'batch' | 'product' | 'preventatives' | 'deviations' | 'capacity'>('gantt');
 
   // Core application states loaded from Firestore multi-tenant configs
   const [recipes, setRecipes] = useState<ProductRecipe[]>([]);
@@ -45,6 +45,15 @@ export default function App() {
   const [planningErrors, setPlanningErrors] = useState<PlanningErrorLog[]>([]);
   const [planningModeTab, setPlanningModeTab] = useState<'single' | 'mix'>('single');
   const [mixConfig, setMixConfig] = useState<Record<string, { enabled: boolean; volume: number; priority: number }>>({});
+  
+  // RCCP capacity parameters state
+  const [capacityParams, setCapacityParams] = useState<CapacityParams>({
+    workingDaysPerMonth: 22,
+    shiftsPerDay: 1,
+    hoursPerShift: 8,
+    maintenanceHoursPerMonth: 0
+  });
+
   const [showConfigPanels, setShowConfigPanels] = useState<boolean>(() => {
     const saved = localStorage.getItem('pcp_show_config_panels');
     return saved !== null ? saved === 'true' : true;
@@ -65,6 +74,39 @@ export default function App() {
   const [analyseResults, setAnalyseResults] = useState<StartTimeSuggestion[]>([]);
   const [analyseMetaVolume, setAnalyseMetaVolume] = useState<number>(0);
   const [restrictToMonth, setRestrictToMonth] = useState<boolean>(false);
+  const [useLeadTimePlanning, setUseLeadTimePlanning] = useState<boolean>(false);
+  const [hasRunAnalysis, setHasRunAnalysis] = useState<boolean>(false);
+  const [analyseProgress, setAnalyseProgress] = useState<number>(0);
+
+  // RCCP local form & simulator states
+  const [formWorkingDays, setFormWorkingDays] = useState<number>(22);
+  const [formShifts, setFormShifts] = useState<number>(1);
+  const [formHours, setFormHours] = useState<number>(8);
+  const [formMaintenance, setFormMaintenance] = useState<number>(0);
+  const [simulatedQuantities, setSimulatedQuantities] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    if (capacityParams) {
+      setFormWorkingDays(capacityParams.workingDaysPerMonth !== undefined ? capacityParams.workingDaysPerMonth : 22);
+      setFormShifts(capacityParams.shiftsPerDay !== undefined ? capacityParams.shiftsPerDay : 1);
+      setFormHours(capacityParams.hoursPerShift !== undefined ? capacityParams.hoursPerShift : 8);
+      setFormMaintenance(capacityParams.maintenanceHoursPerMonth !== undefined ? capacityParams.maintenanceHoursPerMonth : 0);
+    }
+  }, [capacityParams]);
+
+  useEffect(() => {
+    if (recipes.length > 0) {
+      setSimulatedQuantities(prev => {
+        const next = { ...prev };
+        recipes.forEach(r => {
+          if (next[r.id] === undefined) {
+            next[r.id] = 3;
+          }
+        });
+        return next;
+      });
+    }
+  }, [recipes]);
 
   useEffect(() => {
     localStorage.setItem('pcp_show_config_panels', String(showConfigPanels));
@@ -222,6 +264,21 @@ export default function App() {
         setEnvaseLinesCount(defaultSettings.envaseLinesCount);
       }
 
+      // 6. Capacity parameters
+      const capacityParamsDoc = await getDoc(doc(tenantDb, "configs", "capacityParams"));
+      if (capacityParamsDoc.exists()) {
+        setCapacityParams(capacityParamsDoc.data() as CapacityParams);
+      } else {
+        const defaultParams: CapacityParams = {
+          workingDaysPerMonth: 22,
+          shiftsPerDay: 1,
+          hoursPerShift: 8,
+          maintenanceHoursPerMonth: 0
+        };
+        await setDoc(doc(tenantDb, "configs", "capacityParams"), defaultParams);
+        setCapacityParams(defaultParams);
+      }
+
       setIsDataLoaded(true);
     } catch (err) {
       console.error("Erro ao carregar dados do tenant do Firestore:", err);
@@ -345,6 +402,17 @@ export default function App() {
         }
       } catch (err) {
         console.error("Erro ao deletar receita no Firestore:", err);
+      }
+    }
+  };
+
+  const handleSaveCapacityParams = async (params: CapacityParams) => {
+    setCapacityParams(params);
+    if (databaseId) {
+      try {
+        await setDoc(doc(getTenantDb(), "configs", "capacityParams"), params);
+      } catch (err) {
+        console.error("Erro ao salvar capacityParams no Firestore:", err);
       }
     }
   };
@@ -496,10 +564,18 @@ export default function App() {
       return;
     }
 
+    let adjustedStart = plannerStart;
+    if (useLeadTimePlanning) {
+      const preferredEnvaseStart = new Date(plannerStart);
+      const inoculationDate = getInoculationDateFromEnvaseStart(recipe, preferredEnvaseStart, 0);
+      const pad = (n: number) => String(n).padStart(2, '0');
+      adjustedStart = `${inoculationDate.getFullYear()}-${pad(inoculationDate.getMonth() + 1)}-${pad(inoculationDate.getDate())}T${pad(inoculationDate.getHours())}:${pad(inoculationDate.getMinutes())}`;
+    }
+
     const result = generateAutomaticPlanning(
       recipe,
       targetVolume,
-      plannerStart,
+      adjustedStart,
       batches,
       preventatives,
       shiftConfig,
@@ -507,12 +583,36 @@ export default function App() {
       envaseLinesCount
     );
 
-    if (result.scheduledBatches.length > 0) {
-      setBatches(prev => [...prev, ...result.scheduledBatches]);
+    let batchesToSave = result.scheduledBatches;
+    let errorsToSave = result.errors;
+
+    if (useLeadTimePlanning) {
+      const targetDate = new Date(plannerStart);
+      const monthIndex = targetDate.getMonth();
+      const year = targetDate.getFullYear();
+      const targetMonthStartMs = new Date(year, monthIndex, 1, 0, 0, 0).getTime();
+      const targetMonthEndMs = new Date(year, monthIndex + 1, 0, 23, 59, 59).getTime();
+
+      batchesToSave = result.scheduledBatches.filter(b => {
+        const envaseStep = b.steps.find(s => s.scaleType === 'Envase');
+        if (!envaseStep) return false;
+        const envaseStartMs = new Date(envaseStep.startDateTime).getTime();
+        return envaseStartMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
+      });
+
+      errorsToSave = result.errors.filter(err => {
+        if (!err.startDateTime) return true;
+        const errStartMs = new Date(err.startDateTime).getTime();
+        return errStartMs >= targetMonthStartMs && errStartMs <= targetMonthEndMs;
+      });
+    }
+
+    if (batchesToSave.length > 0) {
+      setBatches(prev => [...prev, ...batchesToSave]);
       if (databaseId) {
         try {
           const db = getTenantDb();
-          for (const b of result.scheduledBatches) {
+          for (const b of batchesToSave) {
             await setDoc(doc(db, "batches", b.id), b);
           }
         } catch (err) {
@@ -521,8 +621,8 @@ export default function App() {
       }
     }
 
-    if (result.errors.length > 0) {
-      setPlanningErrors(result.errors);
+    if (errorsToSave.length > 0) {
+      setPlanningErrors(errorsToSave);
     } else {
       setPlanningErrors([]);
     }
@@ -555,6 +655,17 @@ export default function App() {
     let allNewBatches: Batch[] = [];
     let allErrors: PlanningErrorLog[] = [];
 
+    let adjustedStart = plannerStart;
+    if (useLeadTimePlanning && sortedItems.length > 0) {
+      const firstRecipe = recipes.find(r => r.id === sortedItems[0].productId);
+      if (firstRecipe) {
+        const preferredEnvaseStart = new Date(plannerStart);
+        const inoculationDate = getInoculationDateFromEnvaseStart(firstRecipe, preferredEnvaseStart, 0);
+        const pad = (n: number) => String(n).padStart(2, '0');
+        adjustedStart = `${inoculationDate.getFullYear()}-${pad(inoculationDate.getMonth() + 1)}-${pad(inoculationDate.getDate())}T${pad(inoculationDate.getHours())}:${pad(inoculationDate.getMinutes())}`;
+      }
+    }
+
     sortedItems.forEach((mixItem) => {
       const recipe = recipes.find(r => r.id === mixItem.productId);
       if (!recipe) return;
@@ -562,7 +673,7 @@ export default function App() {
       const result = generateAutomaticPlanning(
         recipe,
         mixItem.volume,
-        plannerStart,
+        adjustedStart,
         activePool,
         preventatives,
         shiftConfig,
@@ -570,13 +681,36 @@ export default function App() {
         envaseLinesCount
       );
 
-      if (result.scheduledBatches.length > 0) {
-        allNewBatches.push(...result.scheduledBatches);
-        activePool.push(...result.scheduledBatches);
+      let batchesToSave = result.scheduledBatches;
+      if (useLeadTimePlanning) {
+        const targetDate = new Date(plannerStart);
+        const monthIndex = targetDate.getMonth();
+        const year = targetDate.getFullYear();
+        const targetMonthStartMs = new Date(year, monthIndex, 1, 0, 0, 0).getTime();
+        const targetMonthEndMs = new Date(year, monthIndex + 1, 0, 23, 59, 59).getTime();
+
+        batchesToSave = result.scheduledBatches.filter(b => {
+          const envaseStep = b.steps.find(s => s.scaleType === 'Envase');
+          if (!envaseStep) return false;
+          const envaseStartMs = new Date(envaseStep.startDateTime).getTime();
+          return envaseStartMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
+        });
+
+        const filteredErrors = result.errors.filter(err => {
+          if (!err.startDateTime) return true;
+          const errStartMs = new Date(err.startDateTime).getTime();
+          return errStartMs >= targetMonthStartMs && errStartMs <= targetMonthEndMs;
+        });
+        allErrors.push(...filteredErrors);
+      } else {
+        if (result.errors.length > 0) {
+          allErrors.push(...result.errors);
+        }
       }
 
-      if (result.errors.length > 0) {
-        allErrors.push(...result.errors);
+      if (batchesToSave.length > 0) {
+        allNewBatches.push(...batchesToSave);
+        activePool.push(...batchesToSave);
       }
     });
 
@@ -670,7 +804,7 @@ export default function App() {
     }
   };
 
-  const performAnalysis = (restrictValue: boolean) => {
+  const performAnalysis = async (restrictValue: boolean) => {
     let items: { recipe: ProductRecipe; targetVolume: number }[] = [];
     
     if (planningModeTab === 'single') {
@@ -700,32 +834,161 @@ export default function App() {
 
     setIsAnalysing(true);
     setAnalyseResults([]);
+    setAnalyseProgress(0);
 
-    setTimeout(() => {
-      try {
-        const startDate = new Date(plannerStart);
-        const year = startDate.getFullYear();
-        const monthIndex = startDate.getMonth();
+    // Yield control once to let loading UI display
+    await new Promise(r => setTimeout(r, 50));
 
-        const results = findBestStartTimes(
-          year,
-          monthIndex,
-          items,
-          batches,
-          preventatives,
-          shiftConfig,
-          setupTimes,
-          envaseLinesCount,
-          restrictValue
-        );
+    try {
+      const startDate = new Date(plannerStart);
+      const year = startDate.getFullYear();
+      const monthIndex = startDate.getMonth();
 
-        setAnalyseResults(results);
-      } catch (err) {
-        console.error("Erro na varredura de início do PCP:", err);
-      } finally {
-        setIsAnalysing(false);
+      const targetMonthStartMs = new Date(year, monthIndex, 1, 0, 0, 0).getTime();
+      const targetMonthEndMs = new Date(year, monthIndex + 1, 0, 23, 59, 59).getTime();
+      
+      let leadTimeHours = 0;
+      if (items.length > 0) {
+        const recipe = items[0].recipe;
+        for (let i = 0; i < recipe.steps.length - 1; i++) {
+          leadTimeHours += recipe.steps[i].durationHours;
+        }
+        leadTimeHours += (recipe.steps.length - 2) * 2; // buffer transfer
       }
-    }, 100);
+      if (leadTimeHours <= 0) leadTimeHours = 96;
+
+      const sweepStartMs = restrictValue 
+        ? targetMonthStartMs - leadTimeHours * 60 * 60 * 1000 
+        : targetMonthStartMs;
+
+      const testPoints: Date[] = [];
+      let currentTest = new Date(sweepStartMs);
+      currentTest.setMinutes(0, 0, 0);
+      if (currentTest.getHours() % 2 !== 0) {
+        currentTest.setHours(currentTest.getHours() + 1);
+      }
+
+      while (currentTest.getTime() <= targetMonthEndMs) {
+        testPoints.push(new Date(currentTest.getTime()));
+        currentTest.setHours(currentTest.getHours() + 2);
+      }
+
+      const formatLocal = (d: Date): string => {
+        const pad = (n: number) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      };
+
+      const suggestions: StartTimeSuggestion[] = [];
+      const chunkSize = 15; // Process 15 points per chunk
+      
+      for (let i = 0; i < testPoints.length; i += chunkSize) {
+        const chunk = testPoints.slice(i, i + chunkSize);
+        
+        for (const point of chunk) {
+          const startStr = formatLocal(point);
+          let activePool = [...batches];
+          let totalVolumeScheduled = 0;
+          let totalBatchesScheduled = 0;
+          let totalErrors: PlanningErrorLog[] = [];
+          let maxEndMs = new Date(startStr).getTime();
+          
+          for (const item of items) {
+            const result = generateAutomaticPlanning(
+              item.recipe,
+              item.targetVolume,
+              startStr,
+              activePool,
+              preventatives,
+              shiftConfig,
+              setupTimes,
+              envaseLinesCount
+            );
+            
+            let batchesToCount = result.scheduledBatches;
+            if (restrictValue) {
+              batchesToCount = result.scheduledBatches.filter(b => {
+                const envaseStep = b.steps.find(s => s.scaleType === 'Envase');
+                if (!envaseStep) return false;
+                const envaseStartMs = new Date(envaseStep.startDateTime).getTime();
+                return envaseStartMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
+              });
+            }
+            
+            if (batchesToCount.length > 0) {
+              totalBatchesScheduled += batchesToCount.length;
+              totalVolumeScheduled += batchesToCount.length * item.recipe.yieldPerBatch;
+              activePool.push(...batchesToCount);
+              
+              batchesToCount.forEach(b => {
+                b.steps.forEach(s => {
+                  const t = new Date(s.endDateTime).getTime();
+                  if (t > maxEndMs) maxEndMs = t;
+                });
+              });
+            }
+            
+            if (result.errors.length > 0) {
+              const filteredErrors = result.errors.filter(err => {
+                if (!err.startDateTime) return true;
+                const errStartMs = new Date(err.startDateTime).getTime();
+                return !restrictValue || (errStartMs >= targetMonthStartMs && errStartMs <= targetMonthEndMs);
+              });
+              totalErrors.push(...filteredErrors);
+            }
+          }
+          
+          if (totalBatchesScheduled > 0) {
+            const endStr = formatLocal(new Date(maxEndMs));
+            const requiresBypass = totalErrors.some(e => e.canBypass);
+            
+            suggestions.push({
+              startDateTime: startStr,
+              endDateTime: endStr,
+              volumeScheduled: totalVolumeScheduled,
+              batchesScheduledCount: totalBatchesScheduled,
+              hasErrors: totalErrors.length > 0,
+              errorsCount: totalErrors.length,
+              requiresBypass,
+              errors: totalErrors
+            });
+          }
+        }
+
+        // Update progress
+        const progressPercent = Math.round((Math.min(i + chunkSize, testPoints.length) / testPoints.length) * 100);
+        setAnalyseProgress(progressPercent);
+
+        // Yield execution to prevent "Page Unresponsive" dialog
+        await new Promise(r => setTimeout(r, 0));
+      }
+
+      suggestions.sort((a, b) => {
+        if (b.volumeScheduled !== a.volumeScheduled) {
+          return b.volumeScheduled - a.volumeScheduled;
+        }
+        if (a.errorsCount !== b.errorsCount) {
+          return a.errorsCount - b.errorsCount;
+        }
+        return new Date(a.endDateTime).getTime() - new Date(b.endDateTime).getTime();
+      });
+      
+      const uniqueSuggestions: StartTimeSuggestion[] = [];
+      const seenStarts = new Set<string>();
+      
+      for (const sug of suggestions) {
+        if (!seenStarts.has(sug.startDateTime)) {
+          seenStarts.add(sug.startDateTime);
+          uniqueSuggestions.push(sug);
+          if (uniqueSuggestions.length >= 5) break;
+        }
+      }
+
+      setAnalyseResults(uniqueSuggestions);
+    } catch (err) {
+      console.error("Erro na varredura de início do PCP:", err);
+    } finally {
+      setIsAnalysing(false);
+    }
   };
 
   const handleAnalyseBestStart = () => {
@@ -768,13 +1031,16 @@ export default function App() {
       setAnalyseMetaVolume(mixTotalVolume);
     }
 
+    setAnalyseResults([]);
+    setHasRunAnalysis(false);
+    setAnalyseProgress(0);
     setShowAnalyseModal(true);
-    performAnalysis(restrictToMonth);
   };
 
   const handleToggleRestrict = (checked: boolean) => {
     setRestrictToMonth(checked);
-    performAnalysis(checked);
+    setHasRunAnalysis(false);
+    setAnalyseResults([]);
   };
 
   const handleApplySuggestion = async (sug: StartTimeSuggestion) => {
@@ -1169,6 +1435,18 @@ export default function App() {
               </span>
             )}
           </button>
+
+          <button
+            onClick={() => setActiveTab('capacity')}
+            className={`flex-1 md:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+              activeTab === 'capacity'
+                ? 'bg-amber-500 text-slate-950 shadow-xs'
+                : 'text-slate-500 hover:text-slate-950 hover:bg-slate-100/70'
+            }`}
+            id="tab-capacity"
+          >
+            <BarChart3 size={15} /> Capacidade RCCP
+          </button>
         </div>
 
         {/* TAB ACTIVE CONTENT RENDER */}
@@ -1385,6 +1663,20 @@ export default function App() {
                             *O motor PCP agendará sequencialmente os produtos marcados na ordem de prioridade definida abaixo.
                           </span>
                         </div>
+
+                        {/* Checkbox de Ajuste de Lead-Time e Restrição ao Mês */}
+                        <div className="col-span-2 flex items-center gap-2 bg-indigo-50/40 p-2.5 rounded-xl border border-indigo-100/60">
+                          <input
+                            type="checkbox"
+                            id="use-lead-time-mix"
+                            checked={useLeadTimePlanning}
+                            onChange={(e) => setUseLeadTimePlanning(e.target.checked)}
+                            className="w-3.5 h-3.5 rounded text-indigo-650 focus:ring-indigo-500 cursor-pointer"
+                          />
+                          <label htmlFor="use-lead-time-mix" className="text-[10px] font-black text-slate-750 cursor-pointer select-none">
+                            Ajustar início pelo Lead-Time (antecipa Erlen para envasar na data escolhida e restringe ao mês útil)
+                          </label>
+                        </div>
                       </div>
 
                       {/* Lista de Produtos do Mix */}
@@ -1535,6 +1827,20 @@ export default function App() {
                           >
                             <Trash2 size={14} />
                           </button>
+                        </div>
+
+                        {/* Checkbox de Ajuste de Lead-Time e Restrição ao Mês */}
+                        <div className="col-span-2 flex items-center gap-2 bg-indigo-50/40 p-2.5 rounded-xl border border-indigo-100/60">
+                          <input
+                            type="checkbox"
+                            id="use-lead-time-single"
+                            checked={useLeadTimePlanning}
+                            onChange={(e) => setUseLeadTimePlanning(e.target.checked)}
+                            className="w-3.5 h-3.5 rounded text-indigo-650 focus:ring-indigo-500 cursor-pointer"
+                          />
+                          <label htmlFor="use-lead-time-single" className="text-[10px] font-black text-slate-750 cursor-pointer select-none">
+                            Ajustar início pelo Lead-Time (antecipa Erlen para envasar na data escolhida e restringe ao mês útil)
+                          </label>
                         </div>
                       </div>
                     </form>
@@ -1824,6 +2130,287 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {activeTab === 'capacity' && (() => {
+            const workingDays = capacityParams.workingDaysPerMonth !== undefined ? capacityParams.workingDaysPerMonth : 22;
+            const shifts = capacityParams.shiftsPerDay !== undefined ? capacityParams.shiftsPerDay : 1;
+            const hrsPerShift = capacityParams.hoursPerShift !== undefined ? capacityParams.hoursPerShift : 8;
+            const maintHrs = capacityParams.maintenanceHoursPerMonth !== undefined ? capacityParams.maintenanceHoursPerMonth : 0;
+
+            const totalAvailableHours = (workingDays * shifts * hrsPerShift) - maintHrs;
+            let totalRequiredHours = 0;
+
+            const isParamsFallback = capacityParams.workingDaysPerMonth === 22 && capacityParams.shiftsPerDay === 1 && capacityParams.hoursPerShift === 8 && capacityParams.maintenanceHoursPerMonth === 0;
+            const isRecipesFallback = recipes.some(r => r.fermentationTimeHours === undefined || r.cipSipTimeHours === undefined || r.chargeDischargeTimeHours === undefined || r.batchVolume === undefined);
+            const showFallbackWarning = isParamsFallback || isRecipesFallback;
+
+            const recipeDataList = recipes.map(r => {
+              const qty = simulatedQuantities[r.id] !== undefined ? simulatedQuantities[r.id] : 3;
+              const ferm = r.fermentationTimeHours !== undefined ? r.fermentationTimeHours : 72;
+              const cip = r.cipSipTimeHours !== undefined ? r.cipSipTimeHours : 0;
+              const charge = r.chargeDischargeTimeHours !== undefined ? r.chargeDischargeTimeHours : 0;
+              
+              const cycleTime = ferm + cip + charge;
+              const requiredHours = qty * cycleTime;
+              totalRequiredHours += requiredHours;
+
+              return {
+                recipe: r,
+                qty,
+                cycleTime,
+                requiredHours,
+                ferm,
+                cip,
+                charge
+              };
+            });
+
+            const occupancyRate = totalAvailableHours > 0 ? (totalRequiredHours / totalAvailableHours) * 100 : 0;
+
+            let progressColor = 'bg-emerald-500';
+            let textColor = 'text-emerald-600';
+            let badgeBg = 'bg-emerald-50 border border-emerald-200';
+            if (occupancyRate >= 85 && occupancyRate <= 100) {
+              progressColor = 'bg-amber-500';
+              textColor = 'text-amber-600';
+              badgeBg = 'bg-amber-50 border border-amber-250';
+            } else if (occupancyRate > 100) {
+              progressColor = 'bg-rose-500';
+              textColor = 'text-rose-600';
+              badgeBg = 'bg-rose-50 border border-rose-200 animate-pulse';
+            }
+
+            return (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fadeIn" id="rccp-capacity-tab">
+                {/* LEFT COLUMN: PARAMETERS FORM */}
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4 col-span-1 flex flex-col justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                      <Clock size={16} className="text-amber-500" />
+                      <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">Parâmetros da Fábrica</h3>
+                    </div>
+
+                    <form onSubmit={(e) => {
+                      e.preventDefault();
+                      handleSaveCapacityParams({
+                        workingDaysPerMonth: formWorkingDays,
+                        shiftsPerDay: formShifts,
+                        hoursPerShift: formHours,
+                        maintenanceHoursPerMonth: formMaintenance
+                      });
+                      alert('Parâmetros da fábrica salvos com sucesso!');
+                    }} className="space-y-4 mt-4">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Dias Úteis no Mês</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="31"
+                          value={formWorkingDays}
+                          onChange={(e) => setFormWorkingDays(Math.max(1, parseInt(e.target.value) || 1))}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Turnos por Dia</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="4"
+                          value={formShifts}
+                          onChange={(e) => setFormShifts(Math.max(1, parseInt(e.target.value) || 1))}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Horas por Turno</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="24"
+                          value={formHours}
+                          onChange={(e) => setFormHours(Math.max(1, parseInt(e.target.value) || 1))}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Horas de Manutenção Preventiva / Mês</label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={formMaintenance}
+                          onChange={(e) => setFormMaintenance(Math.max(0, parseInt(e.target.value) || 0))}
+                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                          required
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        className="w-full py-2 bg-indigo-650 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg transition-colors shadow-3xs cursor-pointer mt-2"
+                      >
+                        Salvar Parâmetros
+                      </button>
+                    </form>
+                  </div>
+
+                  <div className="pt-4 border-t border-slate-100 mt-4">
+                    <p className="text-[9px] text-slate-400 font-medium leading-normal">
+                      *As horas de manutenção preventiva serão subtraídas diretamente da capacidade nominal total calculada.
+                    </p>
+                  </div>
+                </div>
+
+                {/* RIGHT COLUMN: SIMULATION & MIX */}
+                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm col-span-2 space-y-6">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <div className="flex items-center gap-2">
+                      <Sliders size={16} className="text-indigo-500" />
+                      <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">Simulador de Mix e Ocupação dos Biorreatores</h3>
+                    </div>
+                  </div>
+
+                  {/* Soft fallback warning */}
+                  {showFallbackWarning && (
+                    <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] font-medium text-amber-800 leading-normal flex items-start gap-2">
+                      <span className="text-sm">⚠️</span>
+                      <span>
+                        Exibindo estimativa nominal simplificada. Configure os parâmetros da fábrica e tempos de CIP/SIP no cadastro do produto para maior precisão.
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Recipes list for simulation */}
+                  <div className="space-y-3.5 max-h-[350px] overflow-y-auto pr-1">
+                    {recipeDataList.map(({ recipe, qty, cycleTime, requiredHours, ferm, cip, charge }) => {
+                      const colorObj = COLOR_OPTIONS.find(o => o.value === recipe.color) || COLOR_OPTIONS[0];
+
+                      return (
+                        <div key={recipe.id} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <div className={`w-2.5 h-2.5 rounded-full ${colorObj.bg}`} />
+                              <span className="font-extrabold text-xs text-slate-800 uppercase tracking-tight">{recipe.name}</span>
+                            </div>
+                            <div className="text-[10px] text-slate-550 font-medium leading-relaxed">
+                              Cálculo do Ciclo: <span className="font-mono text-slate-700 font-bold">{ferm}h (Fermentação)</span> + <span className="font-mono text-slate-700 font-bold">{cip}h (CIP)</span> + <span className="font-mono text-slate-700 font-bold">{charge}h (Carga)</span> = <span className="font-mono text-slate-800 font-black">{cycleTime}h/lote</span>
+                            </div>
+                            <div className="text-[10px] text-slate-450 font-bold">
+                              Total Exigido: {qty} lotes × {cycleTime}h = <span className="text-indigo-650 font-mono font-black">{requiredHours}h</span>
+                            </div>
+                          </div>
+
+                          {/* Quantity controls */}
+                          <div className="flex items-center gap-2 sm:self-center self-end">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Lotes no Mês:</span>
+                            <div className="flex items-center border border-slate-300 rounded-lg overflow-hidden bg-white shadow-3xs">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSimulatedQuantities(prev => ({
+                                    ...prev,
+                                    [recipe.id]: Math.max(0, qty - 1)
+                                  }));
+                                }}
+                                className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-slate-650 hover:text-slate-800 text-xs font-bold transition-all cursor-pointer border-r border-slate-255"
+                              >
+                                -
+                              </button>
+                              <input
+                                type="number"
+                                min="0"
+                                value={qty}
+                                onChange={(e) => {
+                                  const val = Math.max(0, parseInt(e.target.value) || 0);
+                                  setSimulatedQuantities(prev => ({
+                                    ...prev,
+                                    [recipe.id]: val
+                                  }));
+                                }}
+                                className="w-10 text-center font-mono font-bold text-xs bg-transparent border-0 focus:outline-none focus:ring-0 text-slate-750"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSimulatedQuantities(prev => ({
+                                    ...prev,
+                                    [recipe.id]: qty + 1
+                                  }));
+                                }}
+                                className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-slate-650 hover:text-slate-800 text-xs font-bold transition-all cursor-pointer border-l border-slate-255"
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Calculations summary & Progress indicator */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-3xl p-6 space-y-4">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-200/60 pb-4">
+                      <div className="space-y-1">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Capacidade Total Disponível</span>
+                        <span className="text-lg font-black text-slate-750 font-mono">
+                          {totalAvailableHours.toLocaleString('pt-BR')} <span className="text-xs font-bold text-slate-400">hs úteis/mês</span>
+                        </span>
+                        <span className="text-[9px] font-medium text-slate-400 block leading-tight">
+                          ({workingDays} dias × {shifts} turnos × {hrsPerShift}hs) - {maintHrs}h manutenção
+                        </span>
+                      </div>
+
+                      <div className="space-y-1 sm:text-right">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Capacidade Total Exigida</span>
+                        <span className="text-lg font-black text-indigo-750 font-mono">
+                          {totalRequiredHours.toLocaleString('pt-BR')} <span className="text-xs font-bold text-slate-450">hs de ciclo</span>
+                        </span>
+                        <span className="text-[9px] font-medium text-slate-450 block leading-tight">
+                          Soma dos tempos de ciclo de todos os lotes do mix
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Occupancy Indicator */}
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center text-xs font-bold">
+                        <span className="text-slate-500 uppercase tracking-wider text-[10px]">Taxa de Ocupação dos Biorreatores:</span>
+                        <span className={`text-sm font-black font-mono ${textColor}`}>
+                          {occupancyRate.toFixed(1)}%
+                        </span>
+                      </div>
+
+                      <div className="w-full bg-slate-200 h-3.5 rounded-full overflow-hidden shadow-3xs p-0.5">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${progressColor}`}
+                          style={{ width: `${Math.min(100, occupancyRate)}%` }}
+                        ></div>
+                      </div>
+
+                      <div className="flex justify-between items-center pt-1 text-[9px] font-extrabold tracking-wider uppercase">
+                        <div className="flex items-center gap-1">
+                          <div className="w-2.5 h-2.5 rounded bg-emerald-500" />
+                          <span className="text-emerald-600">Livre / Normal (&lt; 85%)</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <div className="w-2.5 h-2.5 rounded bg-amber-500" />
+                          <span className="text-amber-600">Atenção (85% a 100%)</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <div className="w-2.5 h-2.5 rounded bg-rose-500" />
+                          <span className="text-rose-600">Sobrecarga (&gt; 100%)</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </main>
 
@@ -1880,23 +2467,67 @@ export default function App() {
               {isAnalysing ? (
                 <div className="flex flex-col items-center justify-center py-16 space-y-4">
                   <div className="w-12 h-12 border-4 border-slate-200 border-t-indigo-600 rounded-full animate-spin"></div>
-                  <div className="text-center space-y-1">
-                    <p className="text-xs font-bold text-slate-700">Varrendo o calendário mensal...</p>
+                  <div className="text-center space-y-2 w-full max-w-xs">
+                    <p className="text-xs font-bold text-slate-705">Varrendo o calendário mensal... {analyseProgress}%</p>
+                    <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden shadow-3xs p-0.5">
+                      <div className="bg-indigo-600 h-full rounded-full transition-all duration-300" style={{ width: `${analyseProgress}%` }}></div>
+                    </div>
                     <p className="text-[10px] text-slate-400 font-medium">Simulando reatores, setups de CIP, escalas e preventivas em tempo real.</p>
                   </div>
+                </div>
+              ) : !hasRunAnalysis ? (
+                <div className="py-12 flex flex-col items-center justify-center text-center space-y-4">
+                  <div className="w-16 h-16 bg-indigo-50 border border-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center text-3xl shadow-3xs animate-bounce">
+                    ⚡
+                  </div>
+                  <div className="space-y-1.5 max-w-md">
+                    <h4 className="font-extrabold text-slate-800 text-sm uppercase tracking-wider">Pronto para Iniciar a Varredura</h4>
+                    <p className="text-[11px] text-slate-450 font-medium leading-relaxed">
+                      Ajuste os parâmetros de restrição mensal na barra acima. O otimizador simulará mais de 350 cenários bi-horários de partida (24/7) para encontrar as melhores datas e otimizar setups de CIP e reatores sem travar a tela.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setHasRunAnalysis(true);
+                      performAnalysis(restrictToMonth);
+                    }}
+                    className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl transition-all shadow-md hover:scale-[1.02] cursor-pointer"
+                  >
+                    Executar Análise de Cenários
+                  </button>
                 </div>
               ) : (
                 <>
                   {analyseResults.length === 0 ? (
-                    <div className="p-4 bg-rose-50 border border-rose-150 rounded-xl text-center space-y-2">
+                    <div className="p-5 bg-rose-50 border border-rose-150 rounded-2xl text-center space-y-3">
                       <p className="text-xs font-bold text-rose-700">Nenhum ponto de início viável encontrado</p>
-                      <p className="text-[10px] text-rose-600">
-                        O volume solicitado ou as restrições físicas (capacidade dos ativos ou preventivas) impedem que qualquer lote seja concluído neste mês.
+                      <p className="text-[10px] text-rose-600 leading-normal">
+                        O volume solicitado ou as restrições físicas (capacidade dos ativos ou preventivas) impedem que qualquer lote seja concluído neste mês sob o cenário atual.
                       </p>
+                      <button
+                        onClick={() => {
+                          setHasRunAnalysis(true);
+                          performAnalysis(restrictToMonth);
+                        }}
+                        className="px-4 py-2 bg-white border border-rose-200 text-rose-700 text-xs font-bold rounded-lg transition-all shadow-3xs cursor-pointer hover:bg-rose-100/50"
+                      >
+                        Tentar Novamente
+                      </button>
                     </div>
                   ) : (
                     <div className="space-y-3.5">
-                      <p className="text-[10px] uppercase tracking-wider font-extrabold text-slate-400 mb-2">Opções de Início Recomendadas:</p>
+                      <div className="flex justify-between items-center mb-1">
+                        <p className="text-[10px] uppercase tracking-wider font-extrabold text-slate-400">Opções de Início Recomendadas:</p>
+                        <button
+                          onClick={() => {
+                            setHasRunAnalysis(true);
+                            performAnalysis(restrictToMonth);
+                          }}
+                          className="text-[10px] text-indigo-600 font-extrabold hover:underline"
+                        >
+                          Recalcular Cenários
+                        </button>
+                      </div>
                       {analyseResults.map((sug, idx) => {
                         const percent = Math.min(100, Math.round((sug.volumeScheduled / analyseMetaVolume) * 100));
                         const isPerfect = percent === 100;

@@ -30,6 +30,12 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: P
   const [steps, setSteps] = useState<StepDefinition[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
 
+  // RCCP settings
+  const [fermentationTimeHours, setFermentationTimeHours] = useState<number>(72);
+  const [cipSipTimeHours, setCipSipTimeHours] = useState<number>(8);
+  const [chargeDischargeTimeHours, setChargeDischargeTimeHours] = useState<number>(4);
+  const [batchVolume, setBatchVolume] = useState<number>(5000);
+
   // Start creating/editing a recipe
   const handleStartNew = () => {
     setEditingId('new');
@@ -44,6 +50,10 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: P
       { id: 'step-' + Date.now() + '-5', scaleType: '3000_5000L', durationHours: 72 },
       { id: 'step-' + Date.now() + '-6', scaleType: 'Envase', durationHours: 12 },
     ]);
+    setFermentationTimeHours(72);
+    setCipSipTimeHours(8);
+    setChargeDischargeTimeHours(4);
+    setBatchVolume(5000);
     setErrorMsg('');
   };
 
@@ -53,6 +63,10 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: P
     setColor(recipe.color);
     setYieldPerBatch(recipe.yieldPerBatch || 3000);
     setSteps([...recipe.steps]);
+    setFermentationTimeHours(recipe.fermentationTimeHours || 72);
+    setCipSipTimeHours(recipe.cipSipTimeHours || 8);
+    setChargeDischargeTimeHours(recipe.chargeDischargeTimeHours || 4);
+    setBatchVolume(recipe.batchVolume || recipe.yieldPerBatch || 5000);
     setErrorMsg('');
   };
 
@@ -119,13 +133,21 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: P
       name: name.trim(),
       color,
       yieldPerBatch,
-      steps
+      steps,
+      fermentationTimeHours,
+      cipSipTimeHours,
+      chargeDischargeTimeHours,
+      batchVolume
     });
 
     setEditingId(null);
     setName('');
     setYieldPerBatch(3000);
     setSteps([]);
+    setFermentationTimeHours(72);
+    setCipSipTimeHours(8);
+    setChargeDischargeTimeHours(4);
+    setBatchVolume(5000);
   };
 
   return (
@@ -211,6 +233,59 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: P
                       {color === opt.value && <Check size={12} className="text-white" />}
                     </button>
                   ))}
+                </div>
+              </div>
+            </div>
+
+            {/* RCCP Capacity Parameters Grid Section */}
+            <div className="bg-slate-50/50 border border-slate-200 rounded-2xl p-4 space-y-4">
+              <span className="text-[10px] font-extrabold text-slate-650 uppercase tracking-wider block border-b border-slate-200 pb-1.5">
+                Parâmetros de Capacidade do Biorreator (RCCP)
+              </span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Volume Nominal Lote (L)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={batchVolume}
+                    onChange={(e) => setBatchVolume(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                    required
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Tempo Reação (hs)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={fermentationTimeHours}
+                    onChange={(e) => setFermentationTimeHours(Math.max(0, parseInt(e.target.value) || 0))}
+                    className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                    required
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Tempo CIP / SIP (hs)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={cipSipTimeHours}
+                    onChange={(e) => setCipSipTimeHours(Math.max(0, parseInt(e.target.value) || 0))}
+                    className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                    required
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Carga / Descarga (hs)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={chargeDischargeTimeHours}
+                    onChange={(e) => setChargeDischargeTimeHours(Math.max(0, parseInt(e.target.value) || 0))}
+                    className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                    required
+                  />
                 </div>
               </div>
             </div>
@@ -351,12 +426,20 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: P
                   <div className="flex justify-between items-start gap-2 mb-2">
                     <div>
                       <h4 className="font-semibold text-slate-800 group-hover:text-slate-950 transition-colors">{recipe.name}</h4>
-                      <div className="flex gap-1 bg-slate-50 border border-slate-100 p-1 rounded items-center mt-1">
-                        <span className="text-[9px] font-mono text-slate-400 uppercase tracking-wide">ID: {recipe.id}</span>
-                        <span className="text-slate-300">|</span>
-                        <span className="text-[9px] font-bold text-emerald-600">
-                          Rend: {recipe.yieldPerBatch?.toLocaleString('pt-BR') || '3.000'} L
-                        </span>
+                      <div className="flex flex-col gap-1 mt-1">
+                        <div className="flex gap-1 bg-slate-50 border border-slate-100 p-1 rounded items-center">
+                          <span className="text-[9px] font-mono text-slate-400 uppercase tracking-wide">ID: {recipe.id}</span>
+                          <span className="text-slate-300">|</span>
+                          <span className="text-[9px] font-bold text-emerald-600">
+                            Rend: {recipe.yieldPerBatch?.toLocaleString('pt-BR') || '3.000'} L
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1 bg-indigo-50/20 border border-indigo-100/30 p-1.5 rounded text-[9px] font-medium text-slate-500 font-mono">
+                          <div>Vol: <span className="font-bold text-slate-700">{recipe.batchVolume || recipe.yieldPerBatch || 0}L</span></div>
+                          <div>Ferm: <span className="font-bold text-slate-700">{recipe.fermentationTimeHours || 0}h</span></div>
+                          <div>CIP: <span className="font-bold text-slate-700">{recipe.cipSipTimeHours || 0}h</span></div>
+                          <div>C/D: <span className="font-bold text-slate-700">{recipe.chargeDischargeTimeHours || 0}h</span></div>
+                        </div>
                       </div>
                     </div>
                     <span className="px-2 py-0.5 rounded text-[10px] font-mono font-medium bg-slate-100 text-slate-600">

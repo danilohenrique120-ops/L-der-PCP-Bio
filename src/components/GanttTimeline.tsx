@@ -55,7 +55,9 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
   const fullAssetsList = getAssetsPool(envaseLinesCount);
   const assetsList = fullAssetsList.filter(asset => visibleScales[asset.scaleType]);
 
-  const [activeMonth, setActiveMonth] = useState<number>(5); // Default to June (index 5)
+  const [activeMonth, setActiveMonth] = useState<number>(() => {
+    return new Date().getMonth();
+  });
   const [viewMode, setViewMode] = useState<'days' | 'weeks'>('days');
   const [now, setNow] = useState<Date>(new Date());
 
@@ -64,6 +66,14 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
       setNow(new Date());
     }, 60000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    // Scroll to today on initial mount
+    setTimeout(() => {
+      scrollToDate(new Date(), 'auto');
+    }, 150);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Month names in Portuguese for filtering
@@ -371,8 +381,9 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
     if (timelineContentRef.current) {
       const diffTime = date.getTime() - timelineStart.getTime();
       const diffDays = diffTime / (1000 * 60 * 60 * 24);
-      const scrollLeft = diffDays * dayWidth;
-      timelineContentRef.current.scrollTo({ left: scrollLeft, behavior });
+      const containerWidth = timelineContentRef.current.clientWidth || 800;
+      const scrollLeft = (diffDays * dayWidth) - (containerWidth / 2) + (dayWidth / 2);
+      timelineContentRef.current.scrollTo({ left: Math.max(0, scrollLeft), behavior });
     }
   };
 
@@ -403,8 +414,10 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
     }
   };
 
-  const handleResetToJune = () => {
-    handleSelectMonth(5); // June is index 5
+  const handleScrollToToday = () => {
+    const today = new Date();
+    setActiveMonth(today.getMonth());
+    scrollToDate(today, 'smooth');
   };
 
   // Determine if today's date context is visible
@@ -540,11 +553,11 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
             </button>
             
             <button
-              onClick={handleResetToJune}
+              onClick={handleScrollToToday}
               className="px-3 py-2 bg-slate-50 hover:bg-slate-150 text-slate-700 border border-slate-250 hover:border-slate-400 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer flex items-center gap-1 shadow-2xs"
-              title="Ir para o início de Junho de 2026 (Período Virtual de Operação)"
+              title="Ir para a data e hora atual no calendário"
             >
-              📍 Junho 2026
+              📍 Hoje ({String(now.getDate()).padStart(2, '0')}/{String(now.getMonth() + 1).padStart(2, '0')})
             </button>
 
             <button
@@ -794,7 +807,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                   title={`Data e hora atual: ${formatFullDate(now.toISOString())}`}
                 >
                   <div className="absolute top-0 -translate-x-1/2 bg-red-500 text-white px-1.5 py-0.5 rounded text-[8px] font-black tracking-widest uppercase shadow-md leading-none whitespace-nowrap">
-                    AGORA ({now.getDate().toString().padStart(2, '0')}/{((now.getMonth() + 1).toString().padStart(2, '0'))} {now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })})
+                    AGORA ({formatShortDate(now.toISOString())})
                   </div>
                 </div>
               )}
