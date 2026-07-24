@@ -28,6 +28,9 @@ export interface CapacityParams {
   shiftsPerDay: number;
   hoursPerShift: number;
   maintenanceHoursPerMonth: number;
+  bioreactorCount: number;
+  fillingMachineCount: number;
+  fillingFlowRateLPH: number;
 }
 
 export interface Shift {
@@ -77,7 +80,7 @@ export interface Batch {
   steps: ScheduledStep[];
   isContaminated?: boolean;
   contaminatedStepIndex?: number;
-  contaminationReason?: 'Mecânico' | 'Biológico' | 'Operacional';
+  contaminationReason?: string;
   contaminationNotes?: string;
 }
 
@@ -89,7 +92,8 @@ export interface DeviationLog {
   productId: string;
   productName: string;
   stepScaleType: ScaleType;
-  reason: 'Mecânico' | 'Biológico' | 'Operacional';
+  reason: string;
+  category?: string;
   notes: string;
   details: string;
 }

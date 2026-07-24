@@ -18,19 +18,20 @@ interface GanttTimelineProps {
   onAddDeviationLog: (log: DeviationLog) => void;
   setupTimes: Record<ScaleType, number>;
   envaseLinesCount: number;
+  deviations?: DeviationLog[];
 }
 
 // Visual category groupings for rows
 const CATEGORIES = [
   { label: 'Erlenmeyer (Rotas 0-8)', scaleType: 'Erlenmeyer', min: 0, max: 8 },
   { label: 'Balão (Rotas 1-6)', scaleType: 'Balão', min: 1, max: 6 },
-  { label: 'Tanques 100L (B01-B05)', scaleType: '100L', min: 1, max: 5 },
-  { label: 'Tanques 500L (B06-B10)', scaleType: '500L', min: 6, max: 10 },
-  { label: 'Tanques 3000L/5000L (B11-B16)', scaleType: '3000_5000L', min: 11, max: 16 },
+  { label: 'Tanques 100L', scaleType: '100L' },
+  { label: 'Tanques 500L', scaleType: '500L' },
+  { label: 'Tanques 3000L/5000L', scaleType: '3000_5000L' },
   { label: 'Linha de Envase', scaleType: 'Envase', isLine: true }
 ];
 
-export default function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDeletePreventative, onUpdateBatches, onAddDeviationLog, setupTimes, envaseLinesCount }: GanttTimelineProps) {
+export default function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDeletePreventative, onUpdateBatches, onAddDeviationLog, setupTimes, envaseLinesCount, deviations = [] }: GanttTimelineProps) {
   const [visibleScales, setVisibleScales] = useState<Record<ScaleType, boolean>>(() => {
     const saved = localStorage.getItem('pcp_gantt_visible_scales');
     if (saved) {
@@ -217,6 +218,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
       productName: recipe?.name || 'Produto Desconhecido',
       stepScaleType: step.scaleType,
       reason: deviationReason,
+      category: deviationReason,
       notes: deviationNotes,
       details: `BLOQUEIO POR CONTAMINAÇÃO: Lote congelado no estágio ${step.scaleType} (${selectedBlock.asset?.name}). Estágios subsequentes cancelados e liberados.`
     };
@@ -271,6 +273,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
       productName: recipe?.name || 'Produto Desconhecido',
       stepScaleType: step.scaleType,
       reason: deviationReason,
+      category: deviationReason,
       notes: deviationNotes,
       details: `AJUSTE DE HORÁRIO: Etapa ${step.scaleType} atrasada/deslocada em ${diffHours.toFixed(1)}h. Efeito cascata aplicado a partir de ${formatFullDate(step.startDateTime)}.`
     };
@@ -325,6 +328,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
       productName: recipe?.name || 'Produto Desconhecido',
       stepScaleType: step.scaleType,
       reason: deviationReason,
+      category: deviationReason,
       notes: deviationNotes,
       details: `MUDANÇA DE ROTA: Equipamento alterado de ${selectedBlock.asset?.name} para ${targetAsset?.name || swapAssetId} para a etapa ${step.scaleType}.`
     };
@@ -471,6 +475,53 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
       }
     });
   });
+
+  // Dynamic suggestions for deviation reasons
+  const delaySuggestions = Array.from(new Set([
+    'Mecânico',
+    'Biológico',
+    'Operacional',
+    'Ajuste de Horário',
+    'Atraso na liberação de laudo',
+    'Manutenção corretiva',
+    'Setup prolongado',
+    'Mecânico (Falha Compressor/Agitador)',
+    'Biológico (Mutação/Contaminação)',
+    'Operacional (Falta Operador/Equipe)',
+    ...deviations
+      .filter(d => d.type === 'DELAY')
+      .map(d => d.reason)
+  ])).filter(Boolean);
+
+  const swapSuggestions = Array.from(new Set([
+    'Biológico',
+    'Mecânico',
+    'Operacional',
+    'Biológico (Parâmetro fora do padrão)',
+    'Mecânico (Vazamento/Sensor quebrado)',
+    'Operacional (Logística do galpão/CIP)',
+    'Troca de reator por CIP prolongado',
+    'Reator indisponível',
+    'Gargalo físico',
+    ...deviations
+      .filter(d => d.type === 'ROUTE_CHANGE')
+      .map(d => d.reason)
+  ])).filter(Boolean);
+
+  const contaminationSuggestions = Array.from(new Set([
+    'Biológico',
+    'Mecânico',
+    'Operacional',
+    'Biológico (Fagos / Bactéria Competidora)',
+    'Mecânico (Filtro HEPA quebrado / Vedação)',
+    'Operacional (Falha de esterilização / Inoculadores)',
+    'Contaminação por fagos',
+    'Falha no filtro HEPA',
+    'Falha operacional de inoculação',
+    ...deviations
+      .filter(d => d.type === 'CONTAMINATION')
+      .map(d => d.reason)
+  ])).filter(Boolean);
 
   return (
     <div className="space-y-4" id="gantt-root">
@@ -1161,7 +1212,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                             onClick={() => setDeviationMode(deviationMode === 'contamination' ? 'none' : 'contamination')}
                             className={`flex-1 px-2.5 py-2 rounded-lg font-bold text-[9px] uppercase border transition-all cursor-pointer ${
                               deviationMode === 'contamination' 
-                                ? 'bg-rose-500 text-white border-rose-650 shadow-sm' 
+                                ? 'bg-rose-600 text-white border-rose-700 shadow-sm' 
                                 : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
                             }`}
                           >
@@ -1209,16 +1260,19 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
 
                             <div>
                               <label className="text-[9px] font-bold text-slate-500 uppercase tracking-tight block">Motivo Principal do Desvio</label>
-                              <select 
+                              <input 
+                                type="text"
+                                list="suggested-reasons-delay"
                                 value={deviationReason}
-                                onChange={(e) => setDeviationReason(e.target.value as any)}
-                                className="w-full mt-1 px-2 py-1.5 bg-white border border-slate-300 rounded font-semibold text-slate-700 cursor-pointer"
-                              >
-                                <option value="">Selecione o motivo...</option>
-                                <option value="Mecânico">Mecânico (Falha Compressor/Agitador)</option>
-                                <option value="Biológico">Biológico (Mutação/Contaminação)</option>
-                                <option value="Operacional">Operacional (Falta Operador/Equipe)</option>
-                              </select>
+                                onChange={(e) => setDeviationReason(e.target.value)}
+                                placeholder="Digite ou selecione o motivo do desvio..."
+                                className="w-full mt-1 px-3 py-1.5 bg-white border border-slate-300 rounded font-semibold text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-amber-500 focus:border-amber-500"
+                              />
+                              <datalist id="suggested-reasons-delay">
+                                {delaySuggestions.map((sug, idx) => (
+                                  <option key={idx} value={sug} />
+                                ))}
+                              </datalist>
                             </div>
 
                             <div>
@@ -1275,16 +1329,19 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
 
                             <div>
                               <label className="text-[9px] font-bold text-slate-500 uppercase tracking-tight block">Motivo Principal da Alteração</label>
-                              <select 
+                              <input 
+                                type="text"
+                                list="suggested-reasons-swap"
                                 value={deviationReason}
-                                onChange={(e) => setDeviationReason(e.target.value as any)}
-                                className="w-full mt-1 px-2 py-1.5 bg-white border border-slate-300 rounded font-semibold text-slate-700 cursor-pointer"
-                              >
-                                <option value="">Selecione o motivo...</option>
-                                <option value="Biológico">Biológico (Parâmetro fora do padrão)</option>
-                                <option value="Mecânico">Mecânico (Vazamento/Sensor quebrado)</option>
-                                <option value="Operacional">Operacional (Logística do galpão/CIP)</option>
-                              </select>
+                                onChange={(e) => setDeviationReason(e.target.value)}
+                                placeholder="Digite ou selecione o motivo da troca de ativo..."
+                                className="w-full mt-1 px-3 py-1.5 bg-white border border-slate-300 rounded font-semibold text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+                              />
+                              <datalist id="suggested-reasons-swap">
+                                {swapSuggestions.map((sug, idx) => (
+                                  <option key={idx} value={sug} />
+                                ))}
+                              </datalist>
                             </div>
 
                             <div>
@@ -1317,16 +1374,19 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
 
                             <div>
                               <label className="text-[9px] font-bold text-slate-500 uppercase tracking-tight block">Origem da Contaminação</label>
-                              <select 
+                              <input 
+                                type="text"
+                                list="suggested-reasons-contamination"
                                 value={deviationReason}
-                                onChange={(e) => setDeviationReason(e.target.value as any)}
-                                className="w-full mt-1 px-2 py-1.5 bg-white border border-slate-300 rounded font-semibold text-slate-700 cursor-pointer"
-                              >
-                                <option value="">Selecione a origem...</option>
-                                <option value="Biológico">Biológico (Fagos / Bactéria Competidora)</option>
-                                <option value="Mecânico">Mecânico (Filtro HEPA quebrado / Vedação)</option>
-                                <option value="Operacional">Operacional (Falha de esterilização / Inoculadores)</option>
-                              </select>
+                                onChange={(e) => setDeviationReason(e.target.value)}
+                                placeholder="Digite ou selecione a causa..."
+                                className="w-full mt-1 px-3 py-1.5 bg-white border border-slate-300 rounded font-semibold text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-rose-500 focus:border-rose-500"
+                              />
+                              <datalist id="suggested-reasons-contamination">
+                                {contaminationSuggestions.map((sug, idx) => (
+                                  <option key={idx} value={sug} />
+                                ))}
+                              </datalist>
                             </div>
 
                             <div>
@@ -1343,7 +1403,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                               type="button"
                               onClick={handleApplyContamination}
                               disabled={!deviationReason || !deviationNotes.trim()}
-                              className="w-full bg-rose-650 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-2 rounded-lg text-xs transition-colors cursor-pointer"
+                              className="w-full bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold py-2 rounded-lg text-xs transition-colors cursor-pointer"
                             >
                               Interromper e Declarar Contaminação ☣️
                             </button>

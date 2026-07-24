@@ -46,12 +46,14 @@ export default function App() {
   const [planningModeTab, setPlanningModeTab] = useState<'single' | 'mix'>('single');
   const [mixConfig, setMixConfig] = useState<Record<string, { enabled: boolean; volume: number; priority: number }>>({});
   
-  // RCCP capacity parameters state
   const [capacityParams, setCapacityParams] = useState<CapacityParams>({
     workingDaysPerMonth: 22,
     shiftsPerDay: 1,
     hoursPerShift: 8,
-    maintenanceHoursPerMonth: 0
+    maintenanceHoursPerMonth: 0,
+    bioreactorCount: 4,
+    fillingMachineCount: 2,
+    fillingFlowRateLPH: 1000
   });
 
   const [showConfigPanels, setShowConfigPanels] = useState<boolean>(() => {
@@ -83,6 +85,9 @@ export default function App() {
   const [formShifts, setFormShifts] = useState<number>(1);
   const [formHours, setFormHours] = useState<number>(8);
   const [formMaintenance, setFormMaintenance] = useState<number>(0);
+  const [formBioreactorCount, setFormBioreactorCount] = useState<number>(4);
+  const [formFillingMachineCount, setFormFillingMachineCount] = useState<number>(2);
+  const [formFillingFlowRateLPH, setFormFillingFlowRateLPH] = useState<number>(1000);
   const [simulatedQuantities, setSimulatedQuantities] = useState<Record<string, number>>({});
 
   useEffect(() => {
@@ -91,6 +96,9 @@ export default function App() {
       setFormShifts(capacityParams.shiftsPerDay !== undefined ? capacityParams.shiftsPerDay : 1);
       setFormHours(capacityParams.hoursPerShift !== undefined ? capacityParams.hoursPerShift : 8);
       setFormMaintenance(capacityParams.maintenanceHoursPerMonth !== undefined ? capacityParams.maintenanceHoursPerMonth : 0);
+      setFormBioreactorCount(capacityParams.bioreactorCount !== undefined ? capacityParams.bioreactorCount : 4);
+      setFormFillingMachineCount(capacityParams.fillingMachineCount !== undefined ? capacityParams.fillingMachineCount : 2);
+      setFormFillingFlowRateLPH(capacityParams.fillingFlowRateLPH !== undefined ? capacityParams.fillingFlowRateLPH : 1000);
     }
   }, [capacityParams]);
 
@@ -273,7 +281,10 @@ export default function App() {
           workingDaysPerMonth: 22,
           shiftsPerDay: 1,
           hoursPerShift: 8,
-          maintenanceHoursPerMonth: 0
+          maintenanceHoursPerMonth: 0,
+          bioreactorCount: 4,
+          fillingMachineCount: 2,
+          fillingFlowRateLPH: 1000
         };
         await setDoc(doc(tenantDb, "configs", "capacityParams"), defaultParams);
         setCapacityParams(defaultParams);
@@ -482,68 +493,70 @@ export default function App() {
 
   const handleClearAllData = async () => {
     if (confirm('Atenção: Isso restaurará todos os dados originais do PCP no servidor da nuvem. Deseja continuar?')) {
-      setRecipes(INITIAL_RECIPES);
-      setPreventatives(INITIAL_PREVENTATIVES);
-      setBatches(getInitialBatches());
-      setDeviations([]);
-      setEnvaseLinesCount(3);
-      setSetupTimes({
-        'Erlenmeyer': 0,
-        'Balão': 0,
-        '100L': 4,
-        '500L': 6,
-        '3000_5000L': 8,
-        'Envase': 4
-      });
-      setShiftConfig({
-        shifts: [
-          { id: 'sh-1', name: '1º Turno (Seg a Sex)', startHour: '06:00', endHour: '14:00', workDays: [1, 2, 3, 4, 5] },
-          { id: 'sh-2', name: '1º Turno (Ter a Sáb)', startHour: '06:00', endHour: '14:00', workDays: [2, 3, 4, 5, 6] },
-          { id: 'sh-3', name: '2º Turno (Seg a Sex)', startHour: '14:00', endHour: '22:00', workDays: [1, 2, 3, 4, 5] }
-        ]
-      });
-      setPlanningErrors([]);
-      setActiveTab('gantt');
+      if (confirm('Você tem certeza absoluta? Essa ação não pode ser desfeita e irá sobrescrever os dados ativos da fábrica.')) {
+        setRecipes(INITIAL_RECIPES);
+        setPreventatives(INITIAL_PREVENTATIVES);
+        setBatches(getInitialBatches());
+        setDeviations([]);
+        setEnvaseLinesCount(3);
+        setSetupTimes({
+          'Erlenmeyer': 0,
+          'Balão': 0,
+          '100L': 4,
+          '500L': 6,
+          '3000_5000L': 8,
+          'Envase': 4
+        });
+        setShiftConfig({
+          shifts: [
+            { id: 'sh-1', name: '1º Turno (Seg a Sex)', startHour: '06:00', endHour: '14:00', workDays: [1, 2, 3, 4, 5] },
+            { id: 'sh-2', name: '1º Turno (Ter a Sáb)', startHour: '06:00', endHour: '14:00', workDays: [2, 3, 4, 5, 6] },
+            { id: 'sh-3', name: '2º Turno (Seg a Sex)', startHour: '14:00', endHour: '22:00', workDays: [1, 2, 3, 4, 5] }
+          ]
+        });
+        setPlanningErrors([]);
+        setActiveTab('gantt');
 
-      if (databaseId) {
-        try {
-          const db = getTenantDb();
-          const recipesSnapshot = await getDocs(collection(db, "recipes"));
-          for (const d of recipesSnapshot.docs) await deleteDoc(doc(db, "recipes", d.id));
-          for (const r of INITIAL_RECIPES) await setDoc(doc(db, "recipes", r.id), r);
+        if (databaseId) {
+          try {
+            const db = getTenantDb();
+            const recipesSnapshot = await getDocs(collection(db, "recipes"));
+            for (const d of recipesSnapshot.docs) await deleteDoc(doc(db, "recipes", d.id));
+            for (const r of INITIAL_RECIPES) await setDoc(doc(db, "recipes", r.id), r);
 
-          const prevSnapshot = await getDocs(collection(db, "preventatives"));
-          for (const d of prevSnapshot.docs) await deleteDoc(doc(db, "preventatives", d.id));
-          for (const p of INITIAL_PREVENTATIVES) await setDoc(doc(db, "preventatives", p.id), p);
+            const prevSnapshot = await getDocs(collection(db, "preventatives"));
+            for (const d of prevSnapshot.docs) await deleteDoc(doc(db, "preventatives", d.id));
+            for (const p of INITIAL_PREVENTATIVES) await setDoc(doc(db, "preventatives", p.id), p);
 
-          const batchesSnapshot = await getDocs(collection(db, "batches"));
-          for (const d of batchesSnapshot.docs) await deleteDoc(doc(db, "batches", d.id));
-          const initialBatches = getInitialBatches();
-          for (const b of initialBatches) await setDoc(doc(db, "batches", b.id), b);
+            const batchesSnapshot = await getDocs(collection(db, "batches"));
+            for (const d of batchesSnapshot.docs) await deleteDoc(doc(db, "batches", d.id));
+            const initialBatches = getInitialBatches();
+            for (const b of initialBatches) await setDoc(doc(db, "batches", b.id), b);
 
-          const devSnapshot = await getDocs(collection(db, "deviations"));
-          for (const d of devSnapshot.docs) await deleteDoc(doc(db, "deviations", d.id));
+            const devSnapshot = await getDocs(collection(db, "deviations"));
+            for (const d of devSnapshot.docs) await deleteDoc(doc(db, "deviations", d.id));
 
-          await setDoc(doc(db, "configs", "settings"), {
-            shiftConfig: {
-              shifts: [
-                { id: 'sh-1', name: '1º Turno (Seg a Sex)', startHour: '06:00', endHour: '14:00', workDays: [1, 2, 3, 4, 5] },
-                { id: 'sh-2', name: '1º Turno (Ter a Sáb)', startHour: '06:00', endHour: '14:00', workDays: [2, 3, 4, 5, 6] },
-                { id: 'sh-3', name: '2º Turno (Seg a Sex)', startHour: '14:00', endHour: '22:00', workDays: [1, 2, 3, 4, 5] }
-              ]
-            },
-            setupTimes: {
-              'Erlenmeyer': 0,
-              'Balão': 0,
-              '100L': 4,
-              '500L': 6,
-              '3000_5000L': 8,
-              'Envase': 4
-            },
-            envaseLinesCount: 3
-          });
-        } catch (err) {
-          console.error("Erro ao resetar fábrica no Firestore:", err);
+            await setDoc(doc(db, "configs", "settings"), {
+              shiftConfig: {
+                shifts: [
+                  { id: 'sh-1', name: '1º Turno (Seg a Sex)', startHour: '06:00', endHour: '14:00', workDays: [1, 2, 3, 4, 5] },
+                  { id: 'sh-2', name: '1º Turno (Ter a Sáb)', startHour: '06:00', endHour: '14:00', workDays: [2, 3, 4, 5, 6] },
+                  { id: 'sh-3', name: '2º Turno (Seg a Sex)', startHour: '14:00', endHour: '22:00', workDays: [1, 2, 3, 4, 5] }
+                ]
+              },
+              setupTimes: {
+                'Erlenmeyer': 0,
+                'Balão': 0,
+                '100L': 4,
+                '500L': 6,
+                '3000_5000L': 8,
+                'Envase': 4
+              },
+              envaseLinesCount: 3
+            });
+          } catch (err) {
+            console.error("Erro ao resetar fábrica no Firestore:", err);
+          }
         }
       }
     }
@@ -666,6 +679,8 @@ export default function App() {
       }
     }
 
+    let currentCampaignStart = adjustedStart;
+
     sortedItems.forEach((mixItem) => {
       const recipe = recipes.find(r => r.id === mixItem.productId);
       if (!recipe) return;
@@ -673,7 +688,7 @@ export default function App() {
       const result = generateAutomaticPlanning(
         recipe,
         mixItem.volume,
-        adjustedStart,
+        currentCampaignStart,
         activePool,
         preventatives,
         shiftConfig,
@@ -711,6 +726,19 @@ export default function App() {
       if (batchesToSave.length > 0) {
         allNewBatches.push(...batchesToSave);
         activePool.push(...batchesToSave);
+      }
+
+      if (result.scheduledBatches.length > 0) {
+        let maxEndMs = new Date(currentCampaignStart).getTime();
+        result.scheduledBatches.forEach(b => {
+          b.steps.forEach(s => {
+            const t = new Date(s.endDateTime).getTime();
+            if (t > maxEndMs) maxEndMs = t;
+          });
+        });
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const d = new Date(maxEndMs);
+        currentCampaignStart = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
       }
     });
 
@@ -892,11 +920,13 @@ export default function App() {
           let totalErrors: PlanningErrorLog[] = [];
           let maxEndMs = new Date(startStr).getTime();
           
+          let currentCampaignStart = startStr;
+          
           for (const item of items) {
             const result = generateAutomaticPlanning(
               item.recipe,
               item.targetVolume,
-              startStr,
+              currentCampaignStart,
               activePool,
               preventatives,
               shiftConfig,
@@ -906,34 +936,45 @@ export default function App() {
             
             let batchesToCount = result.scheduledBatches;
             if (restrictValue) {
-              batchesToCount = result.scheduledBatches.filter(b => {
-                const envaseStep = b.steps.find(s => s.scaleType === 'Envase');
-                if (!envaseStep) return false;
-                const envaseStartMs = new Date(envaseStep.startDateTime).getTime();
-                return envaseStartMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
-              });
+               batchesToCount = result.scheduledBatches.filter(b => {
+                 const envaseStep = b.steps.find(s => s.scaleType === 'Envase');
+                 if (!envaseStep) return false;
+                 const envaseStartMs = new Date(envaseStep.startDateTime).getTime();
+                 return envaseStartMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
+               });
             }
             
             if (batchesToCount.length > 0) {
-              totalBatchesScheduled += batchesToCount.length;
-              totalVolumeScheduled += batchesToCount.length * item.recipe.yieldPerBatch;
-              activePool.push(...batchesToCount);
-              
-              batchesToCount.forEach(b => {
-                b.steps.forEach(s => {
-                  const t = new Date(s.endDateTime).getTime();
-                  if (t > maxEndMs) maxEndMs = t;
-                });
-              });
+               totalBatchesScheduled += batchesToCount.length;
+               totalVolumeScheduled += batchesToCount.length * item.recipe.yieldPerBatch;
+               activePool.push(...batchesToCount);
+               
+               batchesToCount.forEach(b => {
+                 b.steps.forEach(s => {
+                   const t = new Date(s.endDateTime).getTime();
+                   if (t > maxEndMs) maxEndMs = t;
+                 });
+               });
             }
             
             if (result.errors.length > 0) {
-              const filteredErrors = result.errors.filter(err => {
-                if (!err.startDateTime) return true;
-                const errStartMs = new Date(err.startDateTime).getTime();
-                return !restrictValue || (errStartMs >= targetMonthStartMs && errStartMs <= targetMonthEndMs);
-              });
-              totalErrors.push(...filteredErrors);
+               const filteredErrors = result.errors.filter(err => {
+                 if (!err.startDateTime) return true;
+                 const errStartMs = new Date(err.startDateTime).getTime();
+                 return !restrictValue || (errStartMs >= targetMonthStartMs && errStartMs <= targetMonthEndMs);
+               });
+               totalErrors.push(...filteredErrors);
+            }
+
+            if (result.scheduledBatches.length > 0) {
+               let localMaxEndMs = new Date(currentCampaignStart).getTime();
+               result.scheduledBatches.forEach(b => {
+                 b.steps.forEach(s => {
+                   const t = new Date(s.endDateTime).getTime();
+                   if (t > localMaxEndMs) localMaxEndMs = t;
+                 });
+               });
+               currentCampaignStart = formatLocal(new Date(localMaxEndMs));
             }
           }
           
@@ -1081,11 +1122,13 @@ export default function App() {
     const targetMonthStartMs = new Date(year, monthIndex, 1, 0, 0, 0).getTime();
     const targetMonthEndMs = new Date(year, monthIndex + 1, 0, 23, 59, 59).getTime();
 
+    let currentCampaignStart = sug.startDateTime;
+
     items.forEach(item => {
       const result = generateAutomaticPlanning(
         item.recipe,
         item.targetVolume,
-        sug.startDateTime,
+        currentCampaignStart,
         activePool,
         preventatives,
         shiftConfig,
@@ -1115,6 +1158,19 @@ export default function App() {
           return !restrictToMonth || (errStartMs >= targetMonthStartMs && errStartMs <= targetMonthEndMs);
         });
         allErrors.push(...filteredErrors);
+      }
+
+      if (result.scheduledBatches.length > 0) {
+        let maxEndMs = new Date(currentCampaignStart).getTime();
+        result.scheduledBatches.forEach(b => {
+          b.steps.forEach(s => {
+            const t = new Date(s.endDateTime).getTime();
+            if (t > maxEndMs) maxEndMs = t;
+          });
+        });
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const d = new Date(maxEndMs);
+        currentCampaignStart = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
       }
     });
 
@@ -1286,10 +1342,10 @@ export default function App() {
           <div className="flex items-center gap-2">
             <button
               onClick={handleClearAllData}
-              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-750 text-slate-350 hover:text-white rounded-lg text-xs font-semibold border border-slate-700 transition-colors flex items-center gap-1 cursor-pointer"
-              title="Resetar dados para exemplo de fábrica padrão"
+              className="px-2 py-1.5 bg-slate-900/40 hover:bg-slate-800 hover:text-slate-300 text-slate-500 rounded-lg text-[10px] font-medium border border-slate-800/80 transition-colors flex items-center gap-1 cursor-pointer opacity-60 hover:opacity-100"
+              title="Resetar todos os dados ativos e restaurar dados iniciais da fábrica"
             >
-              <Database size={13} /> Resetar Fábrica Exemplo
+              <Database size={10} /> Resetar Fábrica
             </button>
             <span className="text-xs bg-slate-800 text-slate-400 border border-slate-700 px-3 py-1.5 rounded-lg font-mono">
               FÁBRICA: <span className="text-amber-400 font-bold uppercase">{databaseId}</span>
@@ -1960,6 +2016,7 @@ export default function App() {
                   onAddDeviationLog={handleAddDeviationLog}
                   setupTimes={setupTimes}
                   envaseLinesCount={envaseLinesCount}
+                  deviations={deviations}
                 />
               </div>
 
@@ -2016,7 +2073,7 @@ export default function App() {
                   <div>
                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Lotes Contaminados</span>
                     <span className="text-lg font-black text-rose-600">
-                      {deviations.filter(d => d.type === 'contaminação').length}
+                      {deviations.filter(d => d.type === 'CONTAMINATION' || d.type === 'contaminação').length}
                     </span>
                   </div>
                 </div>
@@ -2028,7 +2085,7 @@ export default function App() {
                   <div>
                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Recálculos de Horas</span>
                     <span className="text-lg font-black text-amber-600">
-                      {deviations.filter(d => d.type === 'atraso / reprogramado').length}
+                      {deviations.filter(d => d.type === 'DELAY' || d.type === 'atraso / reprogramado').length}
                     </span>
                   </div>
                 </div>
@@ -2040,7 +2097,7 @@ export default function App() {
                   <div>
                     <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">Mudanças de Ativo</span>
                     <span className="text-lg font-black text-indigo-600">
-                      {deviations.filter(d => d.type === 'troca de rota').length}
+                      {deviations.filter(d => d.type === 'ROUTE_CHANGE' || d.type === 'troca de rota').length}
                     </span>
                   </div>
                 </div>
@@ -2084,25 +2141,34 @@ export default function App() {
                   <div className="divide-y divide-slate-100 overflow-hidden">
                     {deviations.map((dev) => {
                       // Custom tags
-                      let typeBadge = '';
-                      if (dev.type === 'contaminação') typeBadge = 'bg-rose-50 text-rose-700 border-rose-200';
-                      else if (dev.type === 'atraso / reprogramado') typeBadge = 'bg-amber-50 text-amber-700 border-amber-250';
-                      else if (dev.type === 'troca de rota') typeBadge = 'bg-indigo-50 text-indigo-700 border-indigo-250';
+                      let typeBadge = 'bg-slate-50 text-slate-700 border-slate-200';
+                      let typeLabel = dev.type;
+                      if (dev.type === 'CONTAMINATION' || dev.type === 'contaminação') {
+                        typeBadge = 'bg-rose-50 text-rose-700 border-rose-200';
+                        typeLabel = 'Contaminação';
+                      } else if (dev.type === 'DELAY' || dev.type === 'atraso / reprogramado') {
+                        typeBadge = 'bg-amber-50 text-amber-700 border-amber-250';
+                        typeLabel = 'Ajuste de Horário';
+                      } else if (dev.type === 'ROUTE_CHANGE' || dev.type === 'troca de rota') {
+                        typeBadge = 'bg-indigo-50 text-indigo-700 border-indigo-250';
+                        typeLabel = 'Troca de Rota';
+                      }
 
-                      let categoryBadge = '';
-                      if (dev.category === 'Biológico') categoryBadge = 'bg-teal-50 border border-teal-200 text-teal-800';
-                      else if (dev.category === 'Mecânico') categoryBadge = 'bg-cyan-50 border border-cyan-200 text-cyan-800';
-                      else if (dev.category === 'Operacional') categoryBadge = 'bg-slate-50 border border-slate-200 text-slate-705';
+                      const displayCategory = dev.category || dev.reason || 'Geral';
+                      let categoryBadge = 'bg-slate-50 border border-slate-200 text-slate-750';
+                      if (displayCategory === 'Biológico') categoryBadge = 'bg-teal-50 border border-teal-200 text-teal-800';
+                      else if (displayCategory === 'Mecânico') categoryBadge = 'bg-cyan-50 border border-cyan-200 text-cyan-800';
+                      else if (displayCategory === 'Operacional') categoryBadge = 'bg-slate-50 border border-slate-200 text-slate-700';
 
                       return (
                         <div key={dev.id} className="py-4 flex flex-col md:flex-row md:items-start justify-between gap-4 font-sans text-xs">
                           <div className="space-y-1.5 flex-1 pr-4">
                             <div className="flex flex-wrap items-center gap-1.5">
                               <span className={`px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase border ${typeBadge}`}>
-                                {dev.type}
+                                {typeLabel}
                               </span>
                               <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${categoryBadge}`}>
-                                {dev.category}
+                                {displayCategory}
                               </span>
                               <span className="text-[10px] font-mono text-slate-400 font-bold">
                                 {formatFullDate(dev.timestamp)}
@@ -2136,49 +2202,100 @@ export default function App() {
             const shifts = capacityParams.shiftsPerDay !== undefined ? capacityParams.shiftsPerDay : 1;
             const hrsPerShift = capacityParams.hoursPerShift !== undefined ? capacityParams.hoursPerShift : 8;
             const maintHrs = capacityParams.maintenanceHoursPerMonth !== undefined ? capacityParams.maintenanceHoursPerMonth : 0;
+            const bioreactorCount = capacityParams.bioreactorCount !== undefined ? capacityParams.bioreactorCount : 4;
+            const fillingMachineCount = capacityParams.fillingMachineCount !== undefined ? capacityParams.fillingMachineCount : 2;
+            const fillingFlowRateLPH = capacityParams.fillingFlowRateLPH !== undefined ? capacityParams.fillingFlowRateLPH : 1000;
 
             const totalAvailableHours = (workingDays * shifts * hrsPerShift) - maintHrs;
-            let totalRequiredHours = 0;
+            const totalAvailableBioreactorHours = totalAvailableHours * bioreactorCount;
+            const totalAvailableFillingHours = totalAvailableHours * fillingMachineCount;
+
+            let totalRequiredBioreactorHours = 0;
+            let totalRequiredFillingHours = 0;
+            let totalRequiredVolume = 0;
 
             const isParamsFallback = capacityParams.workingDaysPerMonth === 22 && capacityParams.shiftsPerDay === 1 && capacityParams.hoursPerShift === 8 && capacityParams.maintenanceHoursPerMonth === 0;
-            const isRecipesFallback = recipes.some(r => r.fermentationTimeHours === undefined || r.cipSipTimeHours === undefined || r.chargeDischargeTimeHours === undefined || r.batchVolume === undefined);
+            const isRecipesFallback = recipes.some(r => r.fermentationTimeHours === undefined || r.cipSipTimeHours === undefined || r.batchVolume === undefined);
             const showFallbackWarning = isParamsFallback || isRecipesFallback;
 
             const recipeDataList = recipes.map(r => {
               const qty = simulatedQuantities[r.id] !== undefined ? simulatedQuantities[r.id] : 3;
               const ferm = r.fermentationTimeHours !== undefined ? r.fermentationTimeHours : 72;
               const cip = r.cipSipTimeHours !== undefined ? r.cipSipTimeHours : 0;
-              const charge = r.chargeDischargeTimeHours !== undefined ? r.chargeDischargeTimeHours : 0;
-              
-              const cycleTime = ferm + cip + charge;
-              const requiredHours = qty * cycleTime;
-              totalRequiredHours += requiredHours;
+              const batchVolume = r.batchVolume !== undefined ? r.batchVolume : (r.yieldPerBatch || 5000);
+
+              // Tempo de Envase do Lote = Volume_Lote / (Vazão * Nº de Máquinas)
+              const flowRateTotal = fillingFlowRateLPH * fillingMachineCount;
+              const envaseTime = flowRateTotal > 0 ? (batchVolume / flowRateTotal) : 0;
+
+              // Tempo de Ciclo Completo do Tanque = Fermentação + CIP/SIP + Tempo de Envase
+              const cycleTime = ferm + cip + envaseTime;
+
+              const requiredBioreactorHours = qty * cycleTime;
+              const requiredFillingHours = qty * envaseTime;
+
+              totalRequiredBioreactorHours += requiredBioreactorHours;
+              totalRequiredFillingHours += requiredFillingHours;
+              totalRequiredVolume += qty * batchVolume;
+
+              // Capacidade nominal dedicação 100% do tempo no mês
+              const capMaxFerm = cycleTime > 0 ? ((totalAvailableBioreactorHours / cycleTime) * batchVolume) : 0;
+              const capMaxFilling = totalAvailableFillingHours * fillingFlowRateLPH;
+              const effectiveCapacity = Math.min(capMaxFerm, capMaxFilling);
 
               return {
                 recipe: r,
                 qty,
-                cycleTime,
-                requiredHours,
                 ferm,
                 cip,
-                charge
+                batchVolume,
+                envaseTime,
+                cycleTime,
+                requiredBioreactorHours,
+                requiredFillingHours,
+                effectiveCapacity
               };
             });
 
-            const occupancyRate = totalAvailableHours > 0 ? (totalRequiredHours / totalAvailableHours) * 100 : 0;
+            const bioreactorOccupancy = totalAvailableBioreactorHours > 0 ? (totalRequiredBioreactorHours / totalAvailableBioreactorHours) * 100 : 0;
+            const fillingOccupancy = totalAvailableFillingHours > 0 ? (totalRequiredFillingHours / totalAvailableFillingHours) * 100 : 0;
 
-            let progressColor = 'bg-emerald-500';
-            let textColor = 'text-emerald-600';
-            let badgeBg = 'bg-emerald-50 border border-emerald-200';
-            if (occupancyRate >= 85 && occupancyRate <= 100) {
-              progressColor = 'bg-amber-500';
-              textColor = 'text-amber-600';
-              badgeBg = 'bg-amber-50 border border-amber-250';
-            } else if (occupancyRate > 100) {
-              progressColor = 'bg-rose-500';
-              textColor = 'text-rose-600';
-              badgeBg = 'bg-rose-50 border border-rose-200 animate-pulse';
+            // Determinar Gargalo Real da Planta
+            let bottleneckText = '';
+            let bottleneckColor = '';
+            let bottleneckTitle = '';
+            let bottleneckType: 'none' | 'bioreactor' | 'filling' = 'none';
+
+            if (totalRequiredBioreactorHours > 0 || totalRequiredFillingHours > 0) {
+              if (bioreactorOccupancy >= fillingOccupancy) {
+                bottleneckTitle = 'Gargalo na Fermentação: Falta de volume útil em biorreatores.';
+                bottleneckText = 'A taxa de ocupação dos reatores é o principal limitante físico da planta. Aumentar a quantidade ou o tamanho dos tanques elevará a capacidade da fábrica.';
+                bottleneckColor = 'border-amber-200 bg-amber-50 text-amber-800';
+                bottleneckType = 'bioreactor';
+              } else {
+                bottleneckTitle = 'Gargalo no Envase: A vazão das envasadoras está represando o esgotamento dos biorreatores.';
+                bottleneckText = 'A envasadora não dá vazão suficiente para descarregar o reator rapidamente. O tanque fica retido aguardando o envase, esticando o tempo de ciclo total.';
+                bottleneckColor = 'border-rose-200 bg-rose-50 text-rose-800';
+                bottleneckType = 'filling';
+              }
+            } else {
+              bottleneckTitle = 'Planta Disponível / Sem Produção Simulada';
+              bottleneckText = 'Nenhum lote foi adicionado ao mix simulado para este mês.';
+              bottleneckColor = 'border-emerald-250 bg-emerald-50/50 text-emerald-800';
+              bottleneckType = 'none';
             }
+
+            const getProgressColor = (rate: number) => {
+              if (rate < 85) return 'bg-emerald-500';
+              if (rate <= 100) return 'bg-amber-500';
+              return 'bg-rose-500';
+            };
+
+            const getTextColor = (rate: number) => {
+              if (rate < 85) return 'text-emerald-600';
+              if (rate <= 100) return 'text-amber-600';
+              return 'text-rose-600';
+            };
 
             return (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fadeIn" id="rccp-capacity-tab">
@@ -2186,7 +2303,7 @@ export default function App() {
                 <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4 col-span-1 flex flex-col justify-between">
                   <div>
                     <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                      <Clock size={16} className="text-amber-500" />
+                      <Clock size={16} className="text-indigo-500" />
                       <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">Parâmetros da Fábrica</h3>
                     </div>
 
@@ -2196,56 +2313,102 @@ export default function App() {
                         workingDaysPerMonth: formWorkingDays,
                         shiftsPerDay: formShifts,
                         hoursPerShift: formHours,
-                        maintenanceHoursPerMonth: formMaintenance
+                        maintenanceHoursPerMonth: formMaintenance,
+                        bioreactorCount: formBioreactorCount,
+                        fillingMachineCount: formFillingMachineCount,
+                        fillingFlowRateLPH: formFillingFlowRateLPH
                       });
                       alert('Parâmetros da fábrica salvos com sucesso!');
                     }} className="space-y-4 mt-4">
-                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Dias Úteis no Mês</label>
-                        <input
-                          type="number"
-                          min="1"
-                          max="31"
-                          value={formWorkingDays}
-                          onChange={(e) => setFormWorkingDays(Math.max(1, parseInt(e.target.value) || 1))}
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                          required
-                        />
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Dias Úteis no Mês</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="31"
+                            value={formWorkingDays}
+                            onChange={(e) => setFormWorkingDays(Math.max(1, parseInt(e.target.value) || 1))}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                            required
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Turnos por Dia</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="4"
+                            value={formShifts}
+                            onChange={(e) => setFormShifts(Math.max(1, parseInt(e.target.value) || 1))}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                            required
+                          />
+                        </div>
                       </div>
-                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Turnos por Dia</label>
-                        <input
-                          type="number"
-                          min="1"
-                          max="4"
-                          value={formShifts}
-                          onChange={(e) => setFormShifts(Math.max(1, parseInt(e.target.value) || 1))}
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                          required
-                        />
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Horas por Turno</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="24"
+                            value={formHours}
+                            onChange={(e) => setFormHours(Math.max(1, parseInt(e.target.value) || 1))}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                            required
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Manut. Preventiva (h)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={formMaintenance}
+                            onChange={(e) => setFormMaintenance(Math.max(0, parseInt(e.target.value) || 0))}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                            required
+                          />
+                        </div>
                       </div>
-                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Horas por Turno</label>
-                        <input
-                          type="number"
-                          min="1"
-                          max="24"
-                          value={formHours}
-                          onChange={(e) => setFormHours(Math.max(1, parseInt(e.target.value) || 1))}
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                          required
-                        />
-                      </div>
-                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Horas de Manutenção Preventiva / Mês</label>
-                        <input
-                          type="number"
-                          min="0"
-                          value={formMaintenance}
-                          onChange={(e) => setFormMaintenance(Math.max(0, parseInt(e.target.value) || 0))}
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                          required
-                        />
+
+                      <div className="border-t border-slate-100 pt-3 space-y-3">
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Biorreatores Última Escala</label>
+                          <input
+                            type="number"
+                            min="1"
+                            value={formBioreactorCount}
+                            onChange={(e) => setFormBioreactorCount(Math.max(1, parseInt(e.target.value) || 1))}
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                            required
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Nº de Envasadoras</label>
+                            <input
+                              type="number"
+                              min="1"
+                              value={formFillingMachineCount}
+                              onChange={(e) => setFormFillingMachineCount(Math.max(1, parseInt(e.target.value) || 1))}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                              required
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Vazão (L/h por Máq)</label>
+                            <input
+                              type="number"
+                              min="1"
+                              value={formFillingFlowRateLPH}
+                              onChange={(e) => setFormFillingFlowRateLPH(Math.max(1, parseInt(e.target.value) || 1))}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
+                              required
+                            />
+                          </div>
+                        </div>
                       </div>
 
                       <button
@@ -2259,7 +2422,7 @@ export default function App() {
 
                   <div className="pt-4 border-t border-slate-100 mt-4">
                     <p className="text-[9px] text-slate-400 font-medium leading-normal">
-                      *As horas de manutenção preventiva serão subtraídas diretamente da capacidade nominal total calculada.
+                      *As taxas de ocupação são modeladas em tempo real sob restrições físicas de Tanques vs. Máquinas de Envase.
                     </p>
                   </div>
                 </div>
@@ -2269,43 +2432,66 @@ export default function App() {
                   <div className="flex items-center justify-between border-b border-slate-100 pb-3">
                     <div className="flex items-center gap-2">
                       <Sliders size={16} className="text-indigo-500" />
-                      <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">Simulador de Mix e Ocupação dos Biorreatores</h3>
+                      <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">Simulador de Mix e Ocupação Física</h3>
                     </div>
                   </div>
 
                   {/* Soft fallback warning */}
                   {showFallbackWarning && (
-                    <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] font-medium text-amber-800 leading-normal flex items-start gap-2">
+                    <div className="p-3.5 bg-amber-50 border border-amber-250 rounded-xl text-[11px] font-medium text-amber-800 leading-normal flex items-start gap-2">
                       <span className="text-sm">⚠️</span>
                       <span>
-                        Exibindo estimativa nominal simplificada. Configure os parâmetros da fábrica e tempos de CIP/SIP no cadastro do produto para maior precisão.
+                        Valores padrão (fallbacks) ativos para dados de bioprocesso ausentes nas receitas ou nos parâmetros da fábrica.
                       </span>
                     </div>
                   )}
 
+                  {/* Bottleneck Warning Banner */}
+                  <div className={`p-4 border rounded-2xl flex items-start gap-3 transition-all ${bottleneckColor}`}>
+                    <span className="text-lg mt-0.5">ℹ️</span>
+                    <div className="space-y-1">
+                      <h4 className="font-extrabold text-xs uppercase tracking-wide">{bottleneckTitle}</h4>
+                      <p className="text-[10px] font-medium leading-normal opacity-90">{bottleneckText}</p>
+                    </div>
+                  </div>
+
                   {/* Recipes list for simulation */}
-                  <div className="space-y-3.5 max-h-[350px] overflow-y-auto pr-1">
-                    {recipeDataList.map(({ recipe, qty, cycleTime, requiredHours, ferm, cip, charge }) => {
+                  <div className="space-y-3.5 max-h-[300px] overflow-y-auto pr-1">
+                    {recipeDataList.map(({ recipe, qty, ferm, cip, batchVolume, envaseTime, cycleTime, requiredBioreactorHours, requiredFillingHours, effectiveCapacity }) => {
                       const colorObj = COLOR_OPTIONS.find(o => o.value === recipe.color) || COLOR_OPTIONS[0];
 
                       return (
-                        <div key={recipe.id} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                          <div className="space-y-1">
+                        <div key={recipe.id} className="p-4 bg-slate-50/75 border border-slate-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50 transition-all">
+                          <div className="space-y-2 flex-1">
                             <div className="flex items-center gap-2">
                               <div className={`w-2.5 h-2.5 rounded-full ${colorObj.bg}`} />
                               <span className="font-extrabold text-xs text-slate-800 uppercase tracking-tight">{recipe.name}</span>
+                              <span className="text-[9px] font-black uppercase bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full">
+                                Lote: {batchVolume.toLocaleString('pt-BR')} L
+                              </span>
                             </div>
-                            <div className="text-[10px] text-slate-550 font-medium leading-relaxed">
-                              Cálculo do Ciclo: <span className="font-mono text-slate-700 font-bold">{ferm}h (Fermentação)</span> + <span className="font-mono text-slate-700 font-bold">{cip}h (CIP)</span> + <span className="font-mono text-slate-700 font-bold">{charge}h (Carga)</span> = <span className="font-mono text-slate-800 font-black">{cycleTime}h/lote</span>
-                            </div>
-                            <div className="text-[10px] text-slate-450 font-bold">
-                              Total Exigido: {qty} lotes × {cycleTime}h = <span className="text-indigo-650 font-mono font-black">{requiredHours}h</span>
+                            <div className="text-[10px] text-slate-550 font-medium leading-relaxed grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1">
+                              <div>
+                                🧪 <span className="font-bold text-slate-700">Ciclo Biorreator:</span> {ferm}h (Fermentação) + {cip}h (CIP/SIP) = <span className="font-bold font-mono">{ferm + cip}h</span>
+                              </div>
+                              <div>
+                                📦 <span className="font-bold text-slate-700">Tempo Envase Lote:</span> <span className="font-mono font-bold">{envaseTime.toFixed(1)}h</span>
+                              </div>
+                              <div className="md:col-span-2 font-bold text-slate-750">
+                                🔄 Ciclo Total do Tanque (Ocupação): <span className="font-mono text-indigo-750 font-black">{cycleTime.toFixed(1)}h/lote</span>
+                              </div>
+                              <div className="text-slate-450">
+                                Horas do Mix: Biorreator <span className="font-mono text-slate-700 font-bold">{requiredBioreactorHours.toFixed(1)}h</span> | Envase <span className="font-mono text-slate-700 font-bold">{requiredFillingHours.toFixed(1)}h</span>
+                              </div>
+                              <div className="text-emerald-700 font-semibold md:col-span-2">
+                                ⚡ Capacidade Máxima Dedicada: <span className="font-mono font-black">{Math.round(effectiveCapacity).toLocaleString('pt-BR')} L/mês</span>
+                              </div>
                             </div>
                           </div>
 
                           {/* Quantity controls */}
                           <div className="flex items-center gap-2 sm:self-center self-end">
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Lotes no Mês:</span>
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Lotes:</span>
                             <div className="flex items-center border border-slate-300 rounded-lg overflow-hidden bg-white shadow-3xs">
                               <button
                                 type="button"
@@ -2315,7 +2501,7 @@ export default function App() {
                                     [recipe.id]: Math.max(0, qty - 1)
                                   }));
                                 }}
-                                className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-slate-650 hover:text-slate-800 text-xs font-bold transition-all cursor-pointer border-r border-slate-255"
+                                className="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-650 hover:text-slate-800 text-xs font-bold transition-all cursor-pointer border-r border-slate-200"
                               >
                                 -
                               </button>
@@ -2340,7 +2526,7 @@ export default function App() {
                                     [recipe.id]: qty + 1
                                   }));
                                 }}
-                                className="px-2 py-1 bg-slate-50 hover:bg-slate-100 text-slate-650 hover:text-slate-800 text-xs font-bold transition-all cursor-pointer border-l border-slate-255"
+                                className="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-650 hover:text-slate-800 text-xs font-bold transition-all cursor-pointer border-l border-slate-200"
                               >
                                 +
                               </button>
@@ -2351,57 +2537,95 @@ export default function App() {
                     })}
                   </div>
 
-                  {/* Calculations summary & Progress indicator */}
-                  <div className="bg-slate-50 border border-slate-200 rounded-3xl p-6 space-y-4">
-                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-200/60 pb-4">
+                  {/* Calculations summary & Progress indicators */}
+                  <div className="bg-slate-50 border border-slate-200 rounded-3xl p-6 space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-b border-slate-200/60 pb-5">
                       <div className="space-y-1">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Capacidade Total Disponível</span>
-                        <span className="text-lg font-black text-slate-750 font-mono">
-                          {totalAvailableHours.toLocaleString('pt-BR')} <span className="text-xs font-bold text-slate-400">hs úteis/mês</span>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Disponibilidade Mensal</span>
+                        <span className="text-base font-black text-slate-750 font-mono">
+                          {totalAvailableHours.toLocaleString('pt-BR')} <span className="text-xs font-bold text-slate-400">h úteis</span>
                         </span>
                         <span className="text-[9px] font-medium text-slate-400 block leading-tight">
-                          ({workingDays} dias × {shifts} turnos × {hrsPerShift}hs) - {maintHrs}h manutenção
+                          ({workingDays}d × {shifts}t × {hrsPerShift}h) - {maintHrs}h manut.
                         </span>
                       </div>
 
-                      <div className="space-y-1 sm:text-right">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Capacidade Total Exigida</span>
-                        <span className="text-lg font-black text-indigo-750 font-mono">
-                          {totalRequiredHours.toLocaleString('pt-BR')} <span className="text-xs font-bold text-slate-450">hs de ciclo</span>
+                      <div className="space-y-1">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Volume Total do Mix</span>
+                        <span className="text-base font-black text-indigo-700 font-mono">
+                          {totalRequiredVolume.toLocaleString('pt-BR')} <span className="text-xs font-bold text-indigo-500">Litros</span>
                         </span>
-                        <span className="text-[9px] font-medium text-slate-450 block leading-tight">
-                          Soma dos tempos de ciclo de todos os lotes do mix
+                        <span className="text-[9px] font-medium text-indigo-500 block leading-tight">
+                          Lotes simulados × volumes dos tanques
+                        </span>
+                      </div>
+
+                      <div className="space-y-1 md:text-right">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Gargalo Ativo</span>
+                        <span className={`text-xs font-black uppercase tracking-wider px-2 py-1 rounded-md inline-block ${
+                          bottleneckType === 'bioreactor' ? 'bg-amber-100 text-amber-800' :
+                          bottleneckType === 'filling' ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'
+                        }`}>
+                          {bottleneckType === 'bioreactor' ? 'Biorreatores' :
+                           bottleneckType === 'filling' ? 'Envase' : 'Livre'}
                         </span>
                       </div>
                     </div>
 
-                    {/* Occupancy Indicator */}
-                    <div className="space-y-2">
-                      <div className="flex justify-between items-center text-xs font-bold">
-                        <span className="text-slate-500 uppercase tracking-wider text-[10px]">Taxa de Ocupação dos Biorreatores:</span>
-                        <span className={`text-sm font-black font-mono ${textColor}`}>
-                          {occupancyRate.toFixed(1)}%
-                        </span>
+                    {/* Progress Bars for both Stages */}
+                    <div className="space-y-4">
+                      {/* 1. Fermentation Occupancy */}
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between items-center text-xs font-bold">
+                          <span className="text-slate-550 uppercase tracking-wider text-[9px] flex items-center gap-1.5">
+                            🧪 Ocupação dos Biorreatores (Fermentação):
+                            <span className="text-slate-400 font-mono font-medium">({totalRequiredBioreactorHours.toFixed(1)}h / {totalAvailableBioreactorHours.toFixed(1)}h)</span>
+                          </span>
+                          <span className={`text-xs font-black font-mono ${getTextColor(bioreactorOccupancy)}`}>
+                            {bioreactorOccupancy.toFixed(1)}%
+                          </span>
+                        </div>
+
+                        <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden p-0.5">
+                          <div
+                            className={`h-full rounded-full transition-all duration-500 ${getProgressColor(bioreactorOccupancy)}`}
+                            style={{ width: `${Math.min(100, bioreactorOccupancy)}%` }}
+                          ></div>
+                        </div>
                       </div>
 
-                      <div className="w-full bg-slate-200 h-3.5 rounded-full overflow-hidden shadow-3xs p-0.5">
-                        <div
-                          className={`h-full rounded-full transition-all duration-500 ${progressColor}`}
-                          style={{ width: `${Math.min(100, occupancyRate)}%` }}
-                        ></div>
+                      {/* 2. Filling Occupancy */}
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between items-center text-xs font-bold">
+                          <span className="text-slate-550 uppercase tracking-wider text-[9px] flex items-center gap-1.5">
+                            📦 Ocupação das Máquinas de Envase:
+                            <span className="text-slate-400 font-mono font-medium">({totalRequiredFillingHours.toFixed(1)}h / {totalAvailableFillingHours.toFixed(1)}h)</span>
+                          </span>
+                          <span className={`text-xs font-black font-mono ${getTextColor(fillingOccupancy)}`}>
+                            {fillingOccupancy.toFixed(1)}%
+                          </span>
+                        </div>
+
+                        <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden p-0.5">
+                          <div
+                            className={`h-full rounded-full transition-all duration-500 ${getProgressColor(fillingOccupancy)}`}
+                            style={{ width: `${Math.min(100, fillingOccupancy)}%` }}
+                          ></div>
+                        </div>
                       </div>
 
-                      <div className="flex justify-between items-center pt-1 text-[9px] font-extrabold tracking-wider uppercase">
+                      {/* Legend */}
+                      <div className="flex justify-between items-center pt-2 text-[8px] font-extrabold tracking-wider uppercase text-slate-400 border-t border-slate-200/50">
                         <div className="flex items-center gap-1">
-                          <div className="w-2.5 h-2.5 rounded bg-emerald-500" />
-                          <span className="text-emerald-600">Livre / Normal (&lt; 85%)</span>
+                          <div className="w-2 h-2 rounded bg-emerald-500" />
+                          <span className="text-emerald-600">Livre (&lt; 85%)</span>
                         </div>
                         <div className="flex items-center gap-1">
-                          <div className="w-2.5 h-2.5 rounded bg-amber-500" />
-                          <span className="text-amber-600">Atenção (85% a 100%)</span>
+                          <div className="w-2 h-2 rounded bg-amber-500" />
+                          <span className="text-amber-600">Alerta (85% a 100%)</span>
                         </div>
                         <div className="flex items-center gap-1">
-                          <div className="w-2.5 h-2.5 rounded bg-rose-500" />
+                          <div className="w-2 h-2 rounded bg-rose-500" />
                           <span className="text-rose-600">Sobrecarga (&gt; 100%)</span>
                         </div>
                       </div>
