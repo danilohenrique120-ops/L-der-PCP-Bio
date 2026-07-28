@@ -56,6 +56,11 @@ export default function App() {
     fillingFlowRateLPH: 1000
   });
 
+  const [pendingShiftBypassModalData, setPendingShiftBypassModalData] = useState<{
+    outOfShiftBatches: Batch[];
+    errors: PlanningErrorLog[];
+  } | null>(null);
+
   const [showConfigPanels, setShowConfigPanels] = useState<boolean>(() => {
     const saved = localStorage.getItem('pcp_show_config_panels');
     return saved !== null ? saved === 'true' : true;
@@ -596,7 +601,8 @@ export default function App() {
       envaseLinesCount
     );
 
-    let batchesToSave = result.scheduledBatches;
+    let inShiftToSave = result.scheduledBatches;
+    let outOfShiftToSave = result.outOfShiftBatches;
     let errorsToSave = result.errors;
 
     if (useLeadTimePlanning) {
@@ -606,12 +612,16 @@ export default function App() {
       const targetMonthStartMs = new Date(year, monthIndex, 1, 0, 0, 0).getTime();
       const targetMonthEndMs = new Date(year, monthIndex + 1, 0, 23, 59, 59).getTime();
 
-      batchesToSave = result.scheduledBatches.filter(b => {
+      const filterByMonth = (batchList: Batch[]) => batchList.filter(b => {
         const envaseStep = b.steps.find(s => s.scaleType === 'Envase');
         if (!envaseStep) return false;
         const envaseStartMs = new Date(envaseStep.startDateTime).getTime();
-        return envaseStartMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
+        const envaseEndMs = new Date(envaseStep.endDateTime).getTime();
+        return envaseEndMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
       });
+
+      inShiftToSave = filterByMonth(result.scheduledBatches);
+      outOfShiftToSave = filterByMonth(result.outOfShiftBatches);
 
       errorsToSave = result.errors.filter(err => {
         if (!err.startDateTime) return true;
@@ -620,18 +630,25 @@ export default function App() {
       });
     }
 
-    if (batchesToSave.length > 0) {
-      setBatches(prev => [...prev, ...batchesToSave]);
+    if (inShiftToSave.length > 0) {
+      setBatches(prev => [...prev, ...inShiftToSave]);
       if (databaseId) {
         try {
           const db = getTenantDb();
-          for (const b of batchesToSave) {
+          for (const b of inShiftToSave) {
             await setDoc(doc(db, "batches", b.id), b);
           }
         } catch (err) {
           console.error("Erro ao salvar lotes automáticos no Firestore:", err);
         }
       }
+    }
+
+    if (outOfShiftToSave.length > 0) {
+      setPendingShiftBypassModalData({
+        outOfShiftBatches: outOfShiftToSave,
+        errors: errorsToSave
+      });
     }
 
     if (errorsToSave.length > 0) {
@@ -665,7 +682,8 @@ export default function App() {
     const sortedItems = [...selectedItems].sort((a, b) => a.priority - b.priority);
 
     let activePool = [...batches];
-    let allNewBatches: Batch[] = [];
+    let allInShiftBatches: Batch[] = [];
+    let allOutOfShiftBatches: Batch[] = [];
     let allErrors: PlanningErrorLog[] = [];
 
     let adjustedStart = plannerStart;
@@ -696,7 +714,9 @@ export default function App() {
         envaseLinesCount
       );
 
-      let batchesToSave = result.scheduledBatches;
+      let inShiftToSave = result.scheduledBatches;
+      let outOfShiftToSave = result.outOfShiftBatches;
+
       if (useLeadTimePlanning) {
         const targetDate = new Date(plannerStart);
         const monthIndex = targetDate.getMonth();
@@ -704,12 +724,16 @@ export default function App() {
         const targetMonthStartMs = new Date(year, monthIndex, 1, 0, 0, 0).getTime();
         const targetMonthEndMs = new Date(year, monthIndex + 1, 0, 23, 59, 59).getTime();
 
-        batchesToSave = result.scheduledBatches.filter(b => {
+        const filterByMonth = (batchList: Batch[]) => batchList.filter(b => {
           const envaseStep = b.steps.find(s => s.scaleType === 'Envase');
           if (!envaseStep) return false;
           const envaseStartMs = new Date(envaseStep.startDateTime).getTime();
-          return envaseStartMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
+          const envaseEndMs = new Date(envaseStep.endDateTime).getTime();
+          return envaseEndMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
         });
+
+        inShiftToSave = filterByMonth(result.scheduledBatches);
+        outOfShiftToSave = filterByMonth(result.outOfShiftBatches);
 
         const filteredErrors = result.errors.filter(err => {
           if (!err.startDateTime) return true;
@@ -723,14 +747,20 @@ export default function App() {
         }
       }
 
-      if (batchesToSave.length > 0) {
-        allNewBatches.push(...batchesToSave);
-        activePool.push(...batchesToSave);
+      if (inShiftToSave.length > 0) {
+        allInShiftBatches.push(...inShiftToSave);
+        activePool.push(...inShiftToSave);
       }
 
-      if (result.scheduledBatches.length > 0) {
+      if (outOfShiftToSave.length > 0) {
+        allOutOfShiftBatches.push(...outOfShiftToSave);
+        activePool.push(...outOfShiftToSave);
+      }
+
+      const allResBatches = [...result.scheduledBatches, ...result.outOfShiftBatches];
+      if (allResBatches.length > 0) {
         let maxEndMs = new Date(currentCampaignStart).getTime();
-        result.scheduledBatches.forEach(b => {
+        allResBatches.forEach(b => {
           b.steps.forEach(s => {
             const t = new Date(s.endDateTime).getTime();
             if (t > maxEndMs) maxEndMs = t;
@@ -742,18 +772,25 @@ export default function App() {
       }
     });
 
-    if (allNewBatches.length > 0) {
-      setBatches(prev => [...prev, ...allNewBatches]);
+    if (allInShiftBatches.length > 0) {
+      setBatches(prev => [...prev, ...allInShiftBatches]);
       if (databaseId) {
         try {
           const db = getTenantDb();
-          for (const b of allNewBatches) {
+          for (const b of allInShiftBatches) {
             await setDoc(doc(db, "batches", b.id), b);
           }
         } catch (err) {
           console.error("Erro ao salvar lotes do mix no Firestore:", err);
         }
       }
+    }
+
+    if (allOutOfShiftBatches.length > 0) {
+      setPendingShiftBypassModalData({
+        outOfShiftBatches: allOutOfShiftBatches,
+        errors: allErrors
+      });
     }
 
     if (allErrors.length > 0) {
@@ -940,7 +977,8 @@ export default function App() {
                  const envaseStep = b.steps.find(s => s.scaleType === 'Envase');
                  if (!envaseStep) return false;
                  const envaseStartMs = new Date(envaseStep.startDateTime).getTime();
-                 return envaseStartMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
+                 const envaseEndMs = new Date(envaseStep.endDateTime).getTime();
+                 return envaseEndMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
                });
             }
             
@@ -2017,6 +2055,7 @@ export default function App() {
                   setupTimes={setupTimes}
                   envaseLinesCount={envaseLinesCount}
                   deviations={deviations}
+                  planningErrors={planningErrors}
                 />
               </div>
 
@@ -2848,6 +2887,110 @@ export default function App() {
                 className="px-4 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer shadow-3xs"
               >
                 Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pending Shift Bypass Interactive Confirmation Modal */}
+      {pendingShiftBypassModalData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fade-in font-sans">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-200 max-w-lg w-full overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Header */}
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-amber-500/10">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/20 text-amber-600 flex items-center justify-center font-bold">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">Conflito de Turnos Operacionais</h3>
+                  <p className="text-[11px] text-amber-700 font-semibold">Lotes gerados fora da jornada padrão de trabalho</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setPendingShiftBypassModalData(null)}
+                className="text-slate-400 hover:text-slate-600 text-lg font-bold p-1 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Content Body */}
+            <div className="p-5 space-y-4 overflow-y-auto">
+              <div className="p-3 bg-amber-50 border border-amber-200/60 rounded-xl text-xs text-amber-900 leading-relaxed font-medium">
+                O otimizador identificou que <strong>{pendingShiftBypassModalData.outOfShiftBatches.length} lote(s)</strong> possuem etapas de inoculação ou envase em dias/horários fora dos turnos ativos da fábrica (ex: finais de semana ou horários não cadastrados).
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                  Lotes Sinalizados Fora do Turno:
+                </label>
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                  {pendingShiftBypassModalData.outOfShiftBatches.map((b) => {
+                    const recipe = recipes.find(r => r.id === b.productId);
+                    const envaseStep = b.steps.find(s => s.scaleType === 'Envase');
+                    const err = pendingShiftBypassModalData.errors.find(e => e.lotNumber === b.lotNumber);
+
+                    return (
+                      <div key={b.id} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-xs">
+                        <div className="flex items-center justify-between font-mono font-bold text-slate-800">
+                          <span>{b.lotNumber} - {recipe?.name || 'Bio-Lote'}</span>
+                          <span className="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-sans font-bold">
+                            Fora de Turno
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-600">
+                          <strong>Início Lote:</strong> {formatFullDate(b.startDateTime)}
+                        </div>
+                        {envaseStep && (
+                          <div className="text-[11px] text-slate-600">
+                            <strong>Previsão Envase:</strong> {formatFullDate(envaseStep.startDateTime)}
+                          </div>
+                        )}
+                        {err && (
+                          <div className="text-[10px] text-rose-600 font-semibold pt-1">
+                            ⚠️ {err.reason}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-600 font-semibold text-center pt-2">
+                Deseja incluir estes lotes no gráfico de Gantt (Horas Extras / Turno Flexível)?
+              </p>
+            </div>
+
+            {/* Footer Buttons */}
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-2 shrink-0">
+              <button
+                onClick={() => setPendingShiftBypassModalData(null)}
+                className="px-4 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer shadow-3xs"
+              >
+                Não, Descartar Fora de Turno
+              </button>
+              <button
+                onClick={async () => {
+                  const toConfirm = pendingShiftBypassModalData.outOfShiftBatches;
+                  setBatches(prev => [...prev, ...toConfirm]);
+                  if (databaseId) {
+                    try {
+                      const db = getTenantDb();
+                      for (const b of toConfirm) {
+                        await setDoc(doc(db, "batches", b.id), b);
+                      }
+                    } catch (err) {
+                      console.error("Erro ao salvar lotes no Firestore:", err);
+                    }
+                  }
+                  setPendingShiftBypassModalData(null);
+                }}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl transition-all shadow-md cursor-pointer flex items-center gap-1.5"
+              >
+                <span>Sim, Programar Lotes no Gantt</span>
               </button>
             </div>
           </div>

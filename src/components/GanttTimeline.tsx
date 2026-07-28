@@ -4,9 +4,14 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Batch, Preventative, ScaleType, Asset, getAssetsPool, normalizeAssetId, COLOR_OPTIONS, ProductRecipe, DeviationLog, ScheduledStep } from '../types';
+import { Batch, Preventative, ScaleType, Asset, getAssetsPool, normalizeAssetId, COLOR_OPTIONS, ProductRecipe, DeviationLog, ScheduledStep, PlanningErrorLog } from '../types';
 import { formatFullDate, formatShortDate, getWeekNumber, areIntervalsOverlapping } from '../utils/timeline';
 import { ChevronLeft, ChevronRight, Calendar, AlertTriangle, ShieldCheck, Trash2, Sliders, Info, Eye } from 'lucide-react';
+
+export function isAssetMatch(targetAssetId: string, rowAssetId: string, envaseCount: number): boolean {
+  if (!targetAssetId || !rowAssetId) return false;
+  return normalizeAssetId(targetAssetId, envaseCount) === normalizeAssetId(rowAssetId, envaseCount);
+}
 
 interface GanttTimelineProps {
   batches: Batch[];
@@ -19,6 +24,7 @@ interface GanttTimelineProps {
   setupTimes: Record<ScaleType, number>;
   envaseLinesCount: number;
   deviations?: DeviationLog[];
+  planningErrors?: PlanningErrorLog[];
 }
 
 // Visual category groupings for rows
@@ -31,7 +37,7 @@ const CATEGORIES = [
   { label: 'Linha de Envase', scaleType: 'Envase', isLine: true }
 ];
 
-export default function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDeletePreventative, onUpdateBatches, onAddDeviationLog, setupTimes, envaseLinesCount, deviations = [] }: GanttTimelineProps) {
+export default function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDeletePreventative, onUpdateBatches, onAddDeviationLog, setupTimes, envaseLinesCount, deviations = [], planningErrors = [] }: GanttTimelineProps) {
   const [visibleScales, setVisibleScales] = useState<Record<ScaleType, boolean>>(() => {
     const saved = localStorage.getItem('pcp_gantt_visible_scales');
     if (saved) {
@@ -523,6 +529,29 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
       .map(d => d.reason)
   ])).filter(Boolean);
 
+  // Compute per-product planned and unfeasible volume statistics for the summary card
+  const productVolumeSummary = recipes.map(recipe => {
+    const productBatches = batches.filter(b => b.productId === recipe.id);
+    const plannedBatchesCount = productBatches.length;
+    const plannedVolumeLiters = plannedBatchesCount * recipe.yieldPerBatch;
+
+    const productErrors = (planningErrors || []).filter(e => e.productId === recipe.id || e.productName === recipe.name);
+    const unfeasibleErrorCount = productErrors.filter(e => !e.canBypass).length;
+    const unfeasibleVolumeLiters = unfeasibleErrorCount * recipe.yieldPerBatch;
+
+    return {
+      recipe,
+      plannedBatchesCount,
+      plannedVolumeLiters,
+      unfeasibleErrorCount,
+      unfeasibleVolumeLiters,
+      hasActivity: plannedBatchesCount > 0 || unfeasibleErrorCount > 0
+    };
+  }).filter(item => item.hasActivity || batches.length === 0);
+
+  const totalPlannedVolumeAll = productVolumeSummary.reduce((sum, p) => sum + p.plannedVolumeLiters, 0);
+  const totalUnfeasibleVolumeAll = productVolumeSummary.reduce((sum, p) => sum + p.unfeasibleVolumeLiters, 0);
+
   return (
     <div className="space-y-4" id="gantt-root">
       {/* Control bar / header */}
@@ -573,24 +602,22 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
         <div className="flex flex-wrap items-center gap-3 justify-end">
           {/* Zoom controls */}
           <div className="flex items-center gap-1 border-r border-slate-200 pr-3 mr-1">
-            <span className="text-[10px] font-black text-slate-400 uppercase mr-1">Tamanho:</span>
+            <span className="text-[10px] font-black text-slate-400 uppercase mr-1">Zoom:</span>
             <button
-              onClick={() => setZoomLevel(viewMode === 'weeks' ? 35 : 96)}
-              className={`px-2 py-1 text-[10px] font-extrabold rounded ${zoomLevel === (viewMode === 'weeks' ? 35 : 96) ? 'bg-slate-800 text-white border border-slate-900' : 'text-slate-500 hover:bg-slate-100 border border-transparent'}`}
+              type="button"
+              onClick={() => setZoomLevel(prev => Math.max(30, prev - 20))}
+              className="px-2 py-1 bg-slate-50 hover:bg-slate-150 text-slate-700 border border-slate-250 rounded text-xs font-bold transition-all cursor-pointer"
+              title="Diminuir Zoom"
             >
-              {viewMode === 'weeks' ? 'Compacto' : 'Estreito'}
+              - Zoom
             </button>
             <button
-              onClick={() => setZoomLevel(viewMode === 'weeks' ? 55 : 120)}
-              className={`px-2 py-1 text-[10px] font-extrabold rounded ${zoomLevel === (viewMode === 'weeks' ? 55 : 120) ? 'bg-slate-800 text-white border border-slate-900' : 'text-slate-500 hover:bg-slate-100 border border-transparent'}`}
+              type="button"
+              onClick={() => setZoomLevel(prev => Math.min(250, prev + 20))}
+              className="px-2 py-1 bg-slate-50 hover:bg-slate-150 text-slate-700 border border-slate-250 rounded text-xs font-bold transition-all cursor-pointer"
+              title="Aumentar Zoom"
             >
-              {viewMode === 'weeks' ? 'Padrão' : 'Médio'}
-            </button>
-            <button
-              onClick={() => setZoomLevel(viewMode === 'weeks' ? 80 : 160)}
-              className={`px-2 py-1 text-[10px] font-extrabold rounded ${zoomLevel === (viewMode === 'weeks' ? 80 : 160) ? 'bg-slate-800 text-white border border-slate-900' : 'text-slate-500 hover:bg-slate-100 border border-transparent'}`}
-            >
-              {viewMode === 'weeks' ? 'Largo' : 'Amplo'}
+              + Zoom
             </button>
           </div>
 
@@ -625,6 +652,55 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
               Safra Completa (2026)
             </span>
           </div>
+        </div>
+      </div>
+
+      {/* ULTRA-COMPACT SLIM PCP VOLUME SUMMARY BAR */}
+      <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 text-xs">
+        {/* Left: Product Badges */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 font-mono mr-1">
+            Volume no Gantt:
+          </span>
+          {productVolumeSummary.map(({ recipe, plannedBatchesCount, plannedVolumeLiters, unfeasibleErrorCount, unfeasibleVolumeLiters }) => {
+            const colorOb = COLOR_OPTIONS.find(o => o.value === recipe.color) || COLOR_OPTIONS[0];
+
+            return (
+              <div 
+                key={recipe.id} 
+                className="flex items-center gap-2 px-2.5 py-1 bg-slate-50 border border-slate-200/80 rounded-lg text-slate-700 font-medium hover:border-slate-350 transition-all shadow-3xs"
+              >
+                <span className={`w-2.5 h-2.5 rounded-full ${colorOb.bg} border ${colorOb.border} shrink-0`}></span>
+                <span className="font-bold text-slate-800">{recipe.name}:</span>
+                <span className="font-mono font-bold text-emerald-600">
+                  {plannedVolumeLiters.toLocaleString('pt-BR')} L
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono">({plannedBatchesCount} {plannedBatchesCount === 1 ? 'lote' : 'lotes'})</span>
+
+                {unfeasibleVolumeLiters > 0 ? (
+                  <span className="text-[9px] font-bold bg-rose-100 text-rose-700 border border-rose-200 px-1.5 py-0.5 rounded ml-1" title={`${unfeasibleErrorCount} lote(s) não foi possível programar por falta de rota/capacidade`}>
+                    ⚠️ Sem Rota: -{unfeasibleVolumeLiters.toLocaleString('pt-BR')} L
+                  </span>
+                ) : (
+                  <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200/60 px-1.5 py-0.5 rounded ml-1">
+                    ✓ 100%
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Right: Total Summary */}
+        <div className="flex items-center gap-3 font-mono text-xs shrink-0 ml-auto">
+          <span className="text-slate-500 font-medium">
+            Total Programado: <strong className="text-slate-900 font-extrabold text-sm">{totalPlannedVolumeAll.toLocaleString('pt-BR')} L</strong>
+          </span>
+          {totalUnfeasibleVolumeAll > 0 && (
+            <span className="text-rose-700 font-bold bg-rose-50 border border-rose-200 px-2 py-1 rounded-lg text-[11px]">
+              ⚠️ Não Programado: {totalUnfeasibleVolumeAll.toLocaleString('pt-BR')} L
+            </span>
+          )}
         </div>
       </div>
 
@@ -873,7 +949,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                     
                     {/* PREVENTIVE BLOCKS */}
                     {preventatives
-                      .filter(p => normalizeAssetId(p.assetId, envaseLinesCount) === asset.id)
+                      .filter(p => isAssetMatch(p.assetId, asset.id, envaseLinesCount))
                       .map((prev) => {
                         const start = new Date(prev.startDateTime);
                         const end = new Date(prev.endDateTime);
@@ -914,7 +990,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
 
                       return batch.steps
                         .map((step, stepIdx) => ({ step, stepIdx, batch, recipe, recipeColorOb }))
-                        .filter(({ step }) => normalizeAssetId(step.assetId, envaseLinesCount) === asset.id)
+                        .filter(({ step }) => isAssetMatch(step.assetId, asset.id, envaseLinesCount))
                         .flatMap(({ step, stepIdx, batch, recipe, recipeColorOb }) => {
                           const start = new Date(step.startDateTime);
                           const end = new Date(step.endDateTime);
@@ -937,7 +1013,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                             const e1Setup = end.getTime() + stepSetup * 60 * 60 * 1000;
 
                             const hasPrevOverlap = preventatives.some(p => 
-                              normalizeAssetId(p.assetId, envaseLinesCount) === asset.id && 
+                              normalizeAssetId(p.assetId, envaseLinesCount) === normalizeAssetId(asset.id, envaseLinesCount) && 
                               start.getTime() < new Date(p.endDateTime).getTime() && 
                               new Date(p.startDateTime).getTime() < e1Setup
                             );
@@ -945,7 +1021,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                             const hasBatchOverlap = batches.some(b => 
                               b.id !== batch.id && 
                               b.steps.some(st => {
-                                if (normalizeAssetId(st.assetId, envaseLinesCount) !== asset.id) return false;
+                                if (normalizeAssetId(st.assetId, envaseLinesCount) !== normalizeAssetId(asset.id, envaseLinesCount)) return false;
                                 const s2 = new Date(st.startDateTime).getTime();
                                 const e2 = new Date(st.endDateTime).getTime();
                                 const setup2 = setupTimes[st.scaleType] || 0;
@@ -970,6 +1046,10 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                               extraStyles.backgroundImage = 'repeating-linear-gradient(45deg, #334155, #334155 8px, #475569 8px, #475569 16px)';
                             }
 
+                            const startTimeFormatted = `${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}h`;
+                            const stepStartFull = formatFullDate(step.startDateTime);
+                            const stepEndFull = formatFullDate(step.endDateTime);
+
                             blocks.push(
                               <button
                                 key={`${batch.id}-${stepIdx}`}
@@ -980,6 +1060,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                                   stepIndex: stepIdx,
                                   asset
                                 })}
+                                title={`Lote ${batch.lotNumber} - ${recipe?.name || 'Bio-Lote'}\nEtapa: ${step.scaleType}\nInício (${stepIdx === 0 ? 'Inoculação' : 'Etapa'}): ${stepStartFull}\nPrevisão Término: ${stepEndFull}`}
                                 className={`absolute h-[38px] rounded border shadow-2xs hover:shadow hover:-translate-y-0.5 z-10 transition-all text-left px-2 py-1 flex flex-col justify-center cursor-pointer overflow-hidden ${calculatedBgClass}`}
                                 style={{
                                   left: `${leftPx}px`,
@@ -987,20 +1068,20 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                                   ...extraStyles
                                 }}
                               >
-                                <div className="flex items-center justify-between w-full">
-                                  <span className="font-black text-[9px] tracking-tight leading-none leading-tight font-mono truncate">
-                                    [{step.durationHours}h] {batch.lotNumber}
+                                <div className="flex items-center justify-between w-full gap-1">
+                                  <span className="font-black text-[9px] tracking-tight leading-none font-mono truncate">
+                                    [{step.durationHours}h] {batch.lotNumber} <span className="text-amber-300 font-extrabold ml-0.5">• {startTimeFormatted}</span>
                                   </span>
                                   {isStepContaminated ? (
-                                    <span className="text-[8px] bg-slate-950 text-rose-450 rounded font-bold px-1 select-none font-mono">
+                                    <span className="text-[8px] bg-slate-950 text-rose-450 rounded font-bold px-1 select-none font-mono shrink-0">
                                       🚫 CONTAMINADO
                                     </span>
                                   ) : isStepColliding ? (
-                                    <span className="text-[8px] bg-yellow-400 text-slate-950 rounded font-bold px-1 select-none font-mono" title="COLISÃO DE CRONOGRAMA POR ATRASO!">
+                                    <span className="text-[8px] bg-yellow-400 text-slate-950 rounded font-bold px-1 select-none font-mono shrink-0" title="COLISÃO DE CRONOGRAMA POR ATRASO!">
                                       ⚠️ COLISÃO ATRASO
                                     </span>
                                   ) : displayConflict ? (
-                                    <span className="text-[9px] bg-rose-600 text-white rounded font-bold px-1 py-0.2 select-none" title="CONFLITO DE AGENDAMENTO!">
+                                    <span className="text-[9px] bg-rose-600 text-white rounded font-bold px-1 py-0.2 select-none shrink-0" title="CONFLITO DE AGENDAMENTO!">
                                       ⚠️ CONFLITO
                                     </span>
                                   ) : null}

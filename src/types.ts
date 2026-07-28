@@ -144,7 +144,7 @@ export function getAssetsPool(envaseCount: number = 3): Asset[] {
       scaleType: '3000_5000L' as const,
       categoryLabel: 'Tanques 3000L/5000L'
     })),
-    // Linha de Envase - dynamically generated
+    // Linha de Envase - 1 linha por máquina física
     ...Array.from({ length: envaseCount }, (_, i) => ({
       id: `envase-m${i + 1}`,
       name: `Envase - Máquina ${i + 1}`,
@@ -158,6 +158,14 @@ export function normalizeAssetId(assetId: string, envaseCount: number = 3): stri
   if (assetId === 'quality') return 'envase-m1';
   if (assetId === 'embalagem') return envaseCount >= 2 ? 'envase-m2' : 'envase-m1';
   if (assetId === 'dissolutor') return envaseCount >= 3 ? 'envase-m3' : 'envase-m1';
+  
+  if (assetId.startsWith('envase-m')) {
+    const parts = assetId.split('-');
+    if (parts.length >= 2) {
+      return `${parts[0]}-${parts[1]}`;
+    }
+  }
+
   return assetId;
 }
 
