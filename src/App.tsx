@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { ProductRecipe, Batch, Preventative, COLOR_OPTIONS, ScaleType, ShiftConfig, PlanningErrorLog, Shift, DeviationLog, CapacityParams } from './types';
 import { INITIAL_RECIPES, INITIAL_PREVENTATIVES, getInitialBatches } from './data/mockData';
-import { areIntervalsOverlapping, generateAutomaticPlanning, calculateProductionTimeline, formatFullDate, findBestStartTimes, StartTimeSuggestion, getInoculationDateFromEnvaseStart } from './utils/timeline';
+import { areIntervalsOverlapping, generateAutomaticPlanning, calculateProductionTimeline, formatFullDate, findBestStartTimes, StartTimeSuggestion, ProductSuggestionDetail, getInoculationDateFromEnvaseStart } from './utils/timeline';
 import GanttTimeline from './components/GanttTimeline';
 import { User, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
 import { collection, getDocs, doc, setDoc, getDoc, deleteDoc } from "firebase/firestore";
@@ -14,7 +14,7 @@ import { auth, getTenantDb } from "./firebase";
 import BatchForm from './components/BatchForm';
 import ProductForm from './components/ProductForm';
 import PreventativeForm from './components/PreventativeForm';
-import { AlertTriangle, Calendar, PlayCircle, Layers, ShieldX, HelpCircle, AlertOctagon, CheckCircle, BarChart3, Database, RefreshCw, XCircle, Trash2, Clock, CalendarDays, Sliders, ChevronUp, ChevronDown } from 'lucide-react';
+import { AlertTriangle, Calendar, PlayCircle, Layers, ShieldX, HelpCircle, AlertOctagon, CheckCircle, BarChart3, Database, RefreshCw, XCircle, Trash2, Clock, CalendarDays, Sliders, ChevronUp, ChevronDown, X } from 'lucide-react';
 import { getAssetsPool, normalizeAssetId } from './types';
 
 export default function App() {
@@ -759,15 +759,12 @@ export default function App() {
 
       const allResBatches = [...result.scheduledBatches, ...result.outOfShiftBatches];
       if (allResBatches.length > 0) {
-        let maxEndMs = new Date(currentCampaignStart).getTime();
-        allResBatches.forEach(b => {
-          b.steps.forEach(s => {
-            const t = new Date(s.endDateTime).getTime();
-            if (t > maxEndMs) maxEndMs = t;
-          });
-        });
+        // Set search start for the next product in the mix to start immediately after the last batch's inoculation
+        // eliminating the 6-7 day lag caused by waiting for the final Envase step to end!
+        const lastScheduledBatch = allResBatches[allResBatches.length - 1];
+        const nextStartMs = new Date(lastScheduledBatch.startDateTime).getTime() + 60 * 60 * 1000;
         const pad = (n: number) => String(n).padStart(2, '0');
-        const d = new Date(maxEndMs);
+        const d = new Date(nextStartMs);
         currentCampaignStart = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
       }
     });
@@ -869,6 +866,43 @@ export default function App() {
     }
   };
 
+  const handleDeleteCampaignBatches = async (productId: string | 'all', monthIndex: number | 'all') => {
+    const batchesToDelete = batches.filter(b => {
+      if (productId !== 'all' && b.productId !== productId) return false;
+
+      if (monthIndex !== 'all') {
+        const envaseStep = b.steps.find(s => s.scaleType === 'Envase') || b.steps[b.steps.length - 1];
+        if (!envaseStep) return false;
+        const d = new Date(envaseStep.startDateTime);
+        if (d.getMonth() !== monthIndex) return false;
+      }
+
+      return true;
+    });
+
+    if (batchesToDelete.length === 0) {
+      alert('Nenhum lote encontrado para os critérios selecionados.');
+      return;
+    }
+
+    const idsToDelete = new Set(batchesToDelete.map(b => b.id));
+
+    // Remove from local state
+    setBatches(prev => prev.filter(b => !idsToDelete.has(b.id)));
+
+    // Remove from Firestore if DB connected
+    if (databaseId) {
+      try {
+        const db = getTenantDb();
+        for (const b of batchesToDelete) {
+          await deleteDoc(doc(db, "batches", b.id));
+        }
+      } catch (err) {
+        console.error("Erro ao excluir lotes do Firestore:", err);
+      }
+    }
+  };
+
   const performAnalysis = async (restrictValue: boolean) => {
     let items: { recipe: ProductRecipe; targetVolume: number }[] = [];
     
@@ -929,13 +963,13 @@ export default function App() {
       const testPoints: Date[] = [];
       let currentTest = new Date(sweepStartMs);
       currentTest.setMinutes(0, 0, 0);
-      if (currentTest.getHours() % 2 !== 0) {
-        currentTest.setHours(currentTest.getHours() + 1);
+      if (currentTest.getHours() % 4 !== 0) {
+        currentTest.setHours(currentTest.getHours() + (4 - (currentTest.getHours() % 4)));
       }
 
       while (currentTest.getTime() <= targetMonthEndMs) {
         testPoints.push(new Date(currentTest.getTime()));
-        currentTest.setHours(currentTest.getHours() + 2);
+        currentTest.setHours(currentTest.getHours() + 4);
       }
 
       const formatLocal = (d: Date): string => {
@@ -944,7 +978,7 @@ export default function App() {
       };
 
       const suggestions: StartTimeSuggestion[] = [];
-      const chunkSize = 15; // Process 15 points per chunk
+      const chunkSize = 25; // Process 25 points per chunk for ultra-fast performance
       
       for (let i = 0; i < testPoints.length; i += chunkSize) {
         const chunk = testPoints.slice(i, i + chunkSize);
@@ -956,6 +990,7 @@ export default function App() {
           let totalBatchesScheduled = 0;
           let totalErrors: PlanningErrorLog[] = [];
           let maxEndMs = new Date(startStr).getTime();
+          const productDetails: ProductSuggestionDetail[] = [];
           
           let currentCampaignStart = startStr;
           
@@ -981,10 +1016,21 @@ export default function App() {
                  return envaseEndMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
                });
             }
+
+            const itemScheduledVol = batchesToCount.length * item.recipe.yieldPerBatch;
+            productDetails.push({
+              recipeId: item.recipe.id,
+              recipeName: item.recipe.name,
+              color: item.recipe.color,
+              targetVolume: item.targetVolume,
+              scheduledVolume: itemScheduledVol,
+              batchesScheduledCount: batchesToCount.length,
+              yieldPerBatch: item.recipe.yieldPerBatch
+            });
             
             if (batchesToCount.length > 0) {
                totalBatchesScheduled += batchesToCount.length;
-               totalVolumeScheduled += batchesToCount.length * item.recipe.yieldPerBatch;
+               totalVolumeScheduled += itemScheduledVol;
                activePool.push(...batchesToCount);
                
                batchesToCount.forEach(b => {
@@ -1004,15 +1050,11 @@ export default function App() {
                totalErrors.push(...filteredErrors);
             }
 
-            if (result.scheduledBatches.length > 0) {
-               let localMaxEndMs = new Date(currentCampaignStart).getTime();
-               result.scheduledBatches.forEach(b => {
-                 b.steps.forEach(s => {
-                   const t = new Date(s.endDateTime).getTime();
-                   if (t > localMaxEndMs) localMaxEndMs = t;
-                 });
-               });
-               currentCampaignStart = formatLocal(new Date(localMaxEndMs));
+            const allResBatches = [...result.scheduledBatches, ...result.outOfShiftBatches];
+            if (allResBatches.length > 0) {
+               const lastScheduledBatch = allResBatches[allResBatches.length - 1];
+               const nextStartMs = new Date(lastScheduledBatch.startDateTime).getTime() + 60 * 60 * 1000;
+               currentCampaignStart = formatLocal(new Date(nextStartMs));
             }
           }
           
@@ -1028,7 +1070,8 @@ export default function App() {
               hasErrors: totalErrors.length > 0,
               errorsCount: totalErrors.length,
               requiresBypass,
-              errors: totalErrors
+              errors: totalErrors,
+              productDetails
             });
           }
         }
@@ -1198,16 +1241,12 @@ export default function App() {
         allErrors.push(...filteredErrors);
       }
 
-      if (result.scheduledBatches.length > 0) {
-        let maxEndMs = new Date(currentCampaignStart).getTime();
-        result.scheduledBatches.forEach(b => {
-          b.steps.forEach(s => {
-            const t = new Date(s.endDateTime).getTime();
-            if (t > maxEndMs) maxEndMs = t;
-          });
-        });
+      const allResBatches = [...result.scheduledBatches, ...result.outOfShiftBatches];
+      if (allResBatches.length > 0) {
+        const lastScheduledBatch = allResBatches[allResBatches.length - 1];
+        const nextStartMs = new Date(lastScheduledBatch.startDateTime).getTime() + 60 * 60 * 1000;
         const pad = (n: number) => String(n).padStart(2, '0');
-        const d = new Date(maxEndMs);
+        const d = new Date(nextStartMs);
         currentCampaignStart = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
       }
     });
@@ -1378,13 +1417,7 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              onClick={handleClearAllData}
-              className="px-2 py-1.5 bg-slate-900/40 hover:bg-slate-800 hover:text-slate-300 text-slate-500 rounded-lg text-[10px] font-medium border border-slate-800/80 transition-colors flex items-center gap-1 cursor-pointer opacity-60 hover:opacity-100"
-              title="Resetar todos os dados ativos e restaurar dados iniciais da fábrica"
-            >
-              <Database size={10} /> Resetar Fábrica
-            </button>
+
             <span className="text-xs bg-slate-800 text-slate-400 border border-slate-700 px-3 py-1.5 rounded-lg font-mono">
               FÁBRICA: <span className="text-amber-400 font-bold uppercase">{databaseId}</span>
             </span>
@@ -2013,9 +2046,19 @@ export default function App() {
               {/* FINITE PLANNING ERROR LOG MESSAGES */}
               {planningErrors.length > 0 && (
                 <div className="bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl p-4 md:p-5 space-y-2 animate-fadeIn" id="pcp-planning-errors">
-                  <div className="flex items-center gap-2 text-rose-700 font-extrabold text-xs uppercase tracking-wider">
-                    <AlertOctagon size={16} />
-                    <span>Gargalos PCP: {planningErrors.length} Lote(s) não puderam ser programados (Restrição de Turno/Capacidades)</span>
+                  <div className="flex items-center justify-between gap-2 text-rose-700 font-extrabold text-xs uppercase tracking-wider border-b border-rose-200/60 pb-2">
+                    <div className="flex items-center gap-2">
+                      <AlertOctagon size={16} />
+                      <span>Gargalos PCP: {planningErrors.length} Lote(s) não puderam ser programados (Restrição de Turno/Capacidades)</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPlanningErrors([])}
+                      className="p-1 text-rose-500 hover:text-rose-900 hover:bg-rose-150/70 rounded-lg transition-colors cursor-pointer shrink-0"
+                      title="Fechar e dispensar aviso de gargalos"
+                    >
+                      <X size={16} />
+                    </button>
                   </div>
                   <p className="text-[11px] text-rose-600 font-medium">
                     As metas de volume esbarraram na capacidade finita das rotas ou colidiram em períodos de manutenção/fora de turno útil sem possibilidade de antecipação (com Backward). Detalhamento dos erros:
@@ -2056,6 +2099,7 @@ export default function App() {
                   envaseLinesCount={envaseLinesCount}
                   deviations={deviations}
                   planningErrors={planningErrors}
+                  onDeleteCampaignBatches={handleDeleteCampaignBatches}
                 />
               </div>
 
@@ -2842,9 +2886,9 @@ export default function App() {
                               {/* Progress bar */}
                               <div className="space-y-1">
                                 <div className="flex items-center justify-between text-[10px] font-bold text-slate-500">
-                                  <span>Volume Encaixado:</span>
-                                  <span className={isPerfect ? 'text-emerald-600' : 'text-slate-600'}>
-                                    {sug.volumeScheduled.toLocaleString('pt-BR')} L ({percent}%)
+                                  <span>Volume Total Encaixado:</span>
+                                  <span className={isPerfect ? 'text-emerald-600 font-mono' : 'text-slate-700 font-mono'}>
+                                    {sug.volumeScheduled.toLocaleString('pt-BR')} L <span className="text-[9px] text-slate-400 font-normal">({percent}% da Meta de {analyseMetaVolume.toLocaleString('pt-BR')} L)</span>
                                   </span>
                                 </div>
                                 <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
@@ -2855,10 +2899,51 @@ export default function App() {
                                 </div>
                                 {!isPerfect && (
                                   <p className="text-[9px] font-semibold text-rose-500">
-                                    *Faltariam {missingVolume.toLocaleString('pt-BR')} L para atingir a meta neste período.
+                                    *Faltariam {missingVolume.toLocaleString('pt-BR')} L para atingir a meta total neste período.
                                   </p>
                                 )}
                               </div>
+
+                              {/* Per-Product Breakdown Grid for Mix */}
+                              {sug.productDetails && sug.productDetails.length > 0 && (
+                                <div className="mt-2.5 pt-2 border-t border-slate-200/80 space-y-1.5">
+                                  <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 font-mono block">
+                                    Detalhamento de Encaixe por Produto:
+                                  </span>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                    {sug.productDetails.map(pDetail => {
+                                      const pPercent = pDetail.targetVolume > 0 
+                                        ? Math.min(100, Math.round((pDetail.scheduledVolume / pDetail.targetVolume) * 100))
+                                        : 100;
+                                      const colorOb = COLOR_OPTIONS.find(o => o.value === pDetail.color) || COLOR_OPTIONS[0];
+                                      const pMissing = pDetail.targetVolume - pDetail.scheduledVolume;
+
+                                      return (
+                                        <div key={pDetail.recipeId} className="flex items-center justify-between p-2 bg-white rounded-lg border border-slate-200/80 text-[11px] shadow-3xs">
+                                          <div className="flex items-center gap-1.5 truncate mr-2">
+                                            <span className={`w-2 h-2 rounded-full ${colorOb.bg} border ${colorOb.border} shrink-0`}></span>
+                                            <span className="font-bold text-slate-800 truncate">{pDetail.recipeName}</span>
+                                          </div>
+                                          <div className="text-right font-mono text-[10px] shrink-0">
+                                            <div className="font-bold text-slate-700">
+                                              {pDetail.scheduledVolume.toLocaleString('pt-BR')} L <span className="text-slate-400 font-normal">/ {pDetail.targetVolume.toLocaleString('pt-BR')} L</span>
+                                            </div>
+                                            {pMissing > 0 ? (
+                                              <span className="text-[9px] font-bold text-rose-600">
+                                                Faltam: -{pMissing.toLocaleString('pt-BR')} L ({pPercent}%)
+                                              </span>
+                                            ) : (
+                                              <span className="text-[9px] font-bold text-emerald-600">
+                                                ✓ 100% ({pDetail.batchesScheduledCount} {pDetail.batchesScheduledCount === 1 ? 'lote' : 'lotes'})
+                                              </span>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
                             </div>
 
                             <button

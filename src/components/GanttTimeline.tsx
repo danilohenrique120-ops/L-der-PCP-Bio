@@ -25,6 +25,7 @@ interface GanttTimelineProps {
   envaseLinesCount: number;
   deviations?: DeviationLog[];
   planningErrors?: PlanningErrorLog[];
+  onDeleteCampaignBatches?: (productId: string | 'all', monthIndex: number | 'all') => void;
 }
 
 // Visual category groupings for rows
@@ -37,7 +38,7 @@ const CATEGORIES = [
   { label: 'Linha de Envase', scaleType: 'Envase', isLine: true }
 ];
 
-export default function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDeletePreventative, onUpdateBatches, onAddDeviationLog, setupTimes, envaseLinesCount, deviations = [], planningErrors = [] }: GanttTimelineProps) {
+export default function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDeletePreventative, onUpdateBatches, onAddDeviationLog, setupTimes, envaseLinesCount, deviations = [], planningErrors = [], onDeleteCampaignBatches }: GanttTimelineProps) {
   const [visibleScales, setVisibleScales] = useState<Record<ScaleType, boolean>>(() => {
     const saved = localStorage.getItem('pcp_gantt_visible_scales');
     if (saved) {
@@ -529,11 +530,31 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
       .map(d => d.reason)
   ])).filter(Boolean);
 
-  // Compute per-product planned and unfeasible volume statistics for the summary card
+  // Month names helper for displaying month label in the summary card
+  const MONTHS_LABEL_PT = [
+    'Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun',
+    'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'
+  ];
+  const activeMonthLabel = activeMonth !== null ? MONTHS_LABEL_PT[activeMonth] : null;
+
+  // Compute per-product planned and unfeasible volume statistics for BOTH Active Month & Total Accumulated
   const productVolumeSummary = recipes.map(recipe => {
-    const productBatches = batches.filter(b => b.productId === recipe.id);
-    const plannedBatchesCount = productBatches.length;
-    const plannedVolumeLiters = plannedBatchesCount * recipe.yieldPerBatch;
+    const allProductBatches = batches.filter(b => b.productId === recipe.id);
+    const totalAccumulatedBatchesCount = allProductBatches.length;
+    const totalAccumulatedVolumeLiters = totalAccumulatedBatchesCount * recipe.yieldPerBatch;
+
+    // Batches whose Envase (or start) falls in the currently active month
+    const monthBatches = activeMonth !== null
+      ? allProductBatches.filter(b => {
+          const envaseStep = b.steps.find(s => s.scaleType === 'Envase') || b.steps[b.steps.length - 1];
+          if (!envaseStep) return false;
+          const d = new Date(envaseStep.startDateTime);
+          return d.getMonth() === activeMonth;
+        })
+      : allProductBatches;
+
+    const monthBatchesCount = monthBatches.length;
+    const monthVolumeLiters = monthBatchesCount * recipe.yieldPerBatch;
 
     const productErrors = (planningErrors || []).filter(e => e.productId === recipe.id || e.productName === recipe.name);
     const unfeasibleErrorCount = productErrors.filter(e => !e.canBypass).length;
@@ -541,15 +562,18 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
 
     return {
       recipe,
-      plannedBatchesCount,
-      plannedVolumeLiters,
+      totalAccumulatedBatchesCount,
+      totalAccumulatedVolumeLiters,
+      monthBatchesCount,
+      monthVolumeLiters,
       unfeasibleErrorCount,
       unfeasibleVolumeLiters,
-      hasActivity: plannedBatchesCount > 0 || unfeasibleErrorCount > 0
+      hasActivity: totalAccumulatedBatchesCount > 0 || unfeasibleErrorCount > 0
     };
   }).filter(item => item.hasActivity || batches.length === 0);
 
-  const totalPlannedVolumeAll = productVolumeSummary.reduce((sum, p) => sum + p.plannedVolumeLiters, 0);
+  const totalAccumulatedVolumeAll = productVolumeSummary.reduce((sum, p) => sum + p.totalAccumulatedVolumeLiters, 0);
+  const totalMonthVolumeAll = productVolumeSummary.reduce((sum, p) => sum + p.monthVolumeLiters, 0);
   const totalUnfeasibleVolumeAll = productVolumeSummary.reduce((sum, p) => sum + p.unfeasibleVolumeLiters, 0);
 
   return (
@@ -655,14 +679,14 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
         </div>
       </div>
 
-      {/* ULTRA-COMPACT SLIM PCP VOLUME SUMMARY BAR */}
+      {/* ULTRA-COMPACT SLIM PCP VOLUME SUMMARY BAR (Visão Mensal + Acumulada) */}
       <div className="bg-white px-4 py-2.5 rounded-xl border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 text-xs">
         {/* Left: Product Badges */}
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 font-mono mr-1">
-            Volume no Gantt:
+            {activeMonthLabel ? `Volume (${activeMonthLabel} / Total):` : 'Volume Acumulado:'}
           </span>
-          {productVolumeSummary.map(({ recipe, plannedBatchesCount, plannedVolumeLiters, unfeasibleErrorCount, unfeasibleVolumeLiters }) => {
+          {productVolumeSummary.map(({ recipe, totalAccumulatedBatchesCount, totalAccumulatedVolumeLiters, monthBatchesCount, monthVolumeLiters, unfeasibleErrorCount, unfeasibleVolumeLiters }) => {
             const colorOb = COLOR_OPTIONS.find(o => o.value === recipe.color) || COLOR_OPTIONS[0];
 
             return (
@@ -672,10 +696,25 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
               >
                 <span className={`w-2.5 h-2.5 rounded-full ${colorOb.bg} border ${colorOb.border} shrink-0`}></span>
                 <span className="font-bold text-slate-800">{recipe.name}:</span>
-                <span className="font-mono font-bold text-emerald-600">
-                  {plannedVolumeLiters.toLocaleString('pt-BR')} L
-                </span>
-                <span className="text-[10px] text-slate-400 font-mono">({plannedBatchesCount} {plannedBatchesCount === 1 ? 'lote' : 'lotes'})</span>
+
+                {activeMonthLabel ? (
+                  <div className="flex items-center gap-1.5 font-mono">
+                    <span className="text-indigo-600 font-bold bg-indigo-50 px-1.5 py-0.5 rounded text-[11px]" title={`Programado no mês de ${activeMonthLabel}`}>
+                      {activeMonthLabel}: {monthVolumeLiters.toLocaleString('pt-BR')} L <span className="text-[9px] text-indigo-400 font-normal">({monthBatchesCount} lotes)</span>
+                    </span>
+                    <span className="text-slate-300">|</span>
+                    <span className="text-emerald-600 font-bold text-[11px]" title="Total Geral Acumulado no Gantt">
+                      Total: {totalAccumulatedVolumeLiters.toLocaleString('pt-BR')} L <span className="text-[9px] text-slate-400 font-normal">({totalAccumulatedBatchesCount} lotes)</span>
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1 font-mono">
+                    <span className="font-bold text-emerald-600 text-[11px]">
+                      {totalAccumulatedVolumeLiters.toLocaleString('pt-BR')} L
+                    </span>
+                    <span className="text-[10px] text-slate-400">({totalAccumulatedBatchesCount} {totalAccumulatedBatchesCount === 1 ? 'lote' : 'lotes'})</span>
+                  </div>
+                )}
 
                 {unfeasibleVolumeLiters > 0 ? (
                   <span className="text-[9px] font-bold bg-rose-100 text-rose-700 border border-rose-200 px-1.5 py-0.5 rounded ml-1" title={`${unfeasibleErrorCount} lote(s) não foi possível programar por falta de rota/capacidade`}>
@@ -686,6 +725,27 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                     ✓ 100%
                   </span>
                 )}
+
+                {/* Trash button for surgical deletion of this product in this month */}
+                {onDeleteCampaignBatches && (monthBatchesCount > 0 || (activeMonth === null && totalAccumulatedBatchesCount > 0)) && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const targetM = activeMonth !== null ? activeMonth : 'all';
+                      const mText = activeMonthLabel ? `no mês de ${activeMonthLabel}` : 'em toda a safra';
+                      const bCount = activeMonth !== null ? monthBatchesCount : totalAccumulatedBatchesCount;
+                      const volText = (activeMonth !== null ? monthVolumeLiters : totalAccumulatedVolumeLiters).toLocaleString('pt-BR');
+                      if (confirm(`Tem certeza que deseja excluir os ${bCount} lote(s) (${volText} L) do produto ${recipe.name} ${mText}?`)) {
+                        onDeleteCampaignBatches(recipe.id, targetM);
+                      }
+                    }}
+                    className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-100/80 rounded-md transition-colors cursor-pointer ml-1 shrink-0"
+                    title={activeMonthLabel ? `Excluir lotes de ${recipe.name} no mês de ${activeMonthLabel}` : `Excluir todos os lotes de ${recipe.name}`}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )}
               </div>
             );
           })}
@@ -693,8 +753,13 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
 
         {/* Right: Total Summary */}
         <div className="flex items-center gap-3 font-mono text-xs shrink-0 ml-auto">
+          {activeMonthLabel && (
+            <span className="text-indigo-700 font-medium bg-indigo-50 border border-indigo-200/60 px-2 py-1 rounded-lg text-[11px]">
+              {activeMonthLabel}: <strong className="font-extrabold">{totalMonthVolumeAll.toLocaleString('pt-BR')} L</strong>
+            </span>
+          )}
           <span className="text-slate-500 font-medium">
-            Total Programado: <strong className="text-slate-900 font-extrabold text-sm">{totalPlannedVolumeAll.toLocaleString('pt-BR')} L</strong>
+            Total Acumulado: <strong className="text-slate-900 font-extrabold text-sm">{totalAccumulatedVolumeAll.toLocaleString('pt-BR')} L</strong>
           </span>
           {totalUnfeasibleVolumeAll > 0 && (
             <span className="text-rose-700 font-bold bg-rose-50 border border-rose-200 px-2 py-1 rounded-lg text-[11px]">

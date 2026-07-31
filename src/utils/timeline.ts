@@ -659,6 +659,16 @@ export function generateAutomaticPlanning(
   };
 }
 
+export interface ProductSuggestionDetail {
+  recipeId: string;
+  recipeName: string;
+  color?: string;
+  targetVolume: number;
+  scheduledVolume: number;
+  batchesScheduledCount: number;
+  yieldPerBatch: number;
+}
+
 export interface StartTimeSuggestion {
   startDateTime: string;
   endDateTime: string;
@@ -668,6 +678,7 @@ export interface StartTimeSuggestion {
   errorsCount: number;
   requiresBypass: boolean;
   errors: PlanningErrorLog[];
+  productDetails?: ProductSuggestionDetail[];
 }
 
 /**
@@ -726,6 +737,7 @@ export function findBestStartTimes(
     let totalBatchesScheduled = 0;
     let totalErrors: PlanningErrorLog[] = [];
     let maxEndMs = new Date(startStr).getTime();
+    const productDetails: ProductSuggestionDetail[] = [];
     
     for (const item of campaignItems) {
       const result = generateAutomaticPlanning(
@@ -749,10 +761,21 @@ export function findBestStartTimes(
           return envaseEndMs >= targetMonthStartMs && envaseStartMs <= targetMonthEndMs;
         });
       }
+
+      const itemScheduledVol = batchesToCount.length * item.recipe.yieldPerBatch;
+      productDetails.push({
+        recipeId: item.recipe.id,
+        recipeName: item.recipe.name,
+        color: item.recipe.color,
+        targetVolume: item.targetVolume,
+        scheduledVolume: itemScheduledVol,
+        batchesScheduledCount: batchesToCount.length,
+        yieldPerBatch: item.recipe.yieldPerBatch
+      });
       
       if (batchesToCount.length > 0) {
         totalBatchesScheduled += batchesToCount.length;
-        totalVolumeScheduled += batchesToCount.length * item.recipe.yieldPerBatch;
+        totalVolumeScheduled += itemScheduledVol;
         activePool.push(...batchesToCount);
         
         batchesToCount.forEach(b => {
@@ -785,7 +808,8 @@ export function findBestStartTimes(
         hasErrors: totalErrors.length > 0,
         errorsCount: totalErrors.length,
         requiresBypass,
-        errors: totalErrors
+        errors: totalErrors,
+        productDetails
       });
     }
   }
