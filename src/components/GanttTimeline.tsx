@@ -4,9 +4,9 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Batch, Preventative, ScaleType, Asset, getAssetsPool, normalizeAssetId, COLOR_OPTIONS, ProductRecipe, DeviationLog, ScheduledStep, PlanningErrorLog } from '../types';
-import { formatFullDate, formatShortDate, getWeekNumber, areIntervalsOverlapping } from '../utils/timeline';
-import { ChevronLeft, ChevronRight, Calendar, AlertTriangle, ShieldCheck, Trash2, Sliders, Info, Eye } from 'lucide-react';
+import { Batch, Preventative, ScaleType, Asset, getAssetsPool, normalizeAssetId, COLOR_OPTIONS, ProductRecipe, DeviationLog, ScheduledStep, PlanningErrorLog, FactoryScaleCounts } from '../types';
+import { formatFullDate, formatShortDate, getWeekNumber, areIntervalsOverlapping, assignStepOpNumbers, getInoculationDateForAnchoredScale, calculateProductionTimeline, getBatchYield } from '../utils/timeline';
+import { ChevronLeft, ChevronRight, Calendar, AlertTriangle, ShieldCheck, Trash2, Sliders, Info, Eye, Edit3, Check, Plus, Sparkles, Clock, X, BarChart3, Lock } from 'lucide-react';
 
 export function isAssetMatch(targetAssetId: string, rowAssetId: string, envaseCount: number): boolean {
   if (!targetAssetId || !rowAssetId) return false;
@@ -23,6 +23,9 @@ interface GanttTimelineProps {
   onAddDeviationLog: (log: DeviationLog) => void;
   setupTimes: Record<ScaleType, number>;
   envaseLinesCount: number;
+  scaleCounts?: FactoryScaleCounts;
+  onUpdateScaleCount?: (scale: keyof FactoryScaleCounts, delta: number) => void;
+  customAssets?: Asset[];
   deviations?: DeviationLog[];
   planningErrors?: PlanningErrorLog[];
   onDeleteCampaignBatches?: (productId: string | 'all', monthIndex: number | 'all') => void;
@@ -30,20 +33,21 @@ interface GanttTimelineProps {
 
 // Visual category groupings for rows
 const CATEGORIES = [
-  { label: 'Erlenmeyer (Rotas 0-8)', scaleType: 'Erlenmeyer', min: 0, max: 8 },
-  { label: 'Balão (Rotas 1-6)', scaleType: 'Balão', min: 1, max: 6 },
+  { label: 'Erlenmeyer', scaleType: 'Erlenmeyer' },
+  { label: 'Balão', scaleType: 'Balão' },
   { label: 'Tanques 100L', scaleType: '100L' },
   { label: 'Tanques 500L', scaleType: '500L' },
   { label: 'Tanques 3000L/5000L', scaleType: '3000_5000L' },
   { label: 'Linha de Envase', scaleType: 'Envase', isLine: true }
 ];
 
-export default function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDeletePreventative, onUpdateBatches, onAddDeviationLog, setupTimes, envaseLinesCount, deviations = [], planningErrors = [], onDeleteCampaignBatches }: GanttTimelineProps) {
+export default function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDeletePreventative, onUpdateBatches, onAddDeviationLog, setupTimes, envaseLinesCount, scaleCounts, onUpdateScaleCount, customAssets, deviations = [], planningErrors = [], onDeleteCampaignBatches }: GanttTimelineProps) {
   const [visibleScales, setVisibleScales] = useState<Record<ScaleType, boolean>>(() => {
     const saved = localStorage.getItem('pcp_gantt_visible_scales');
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') return parsed;
       } catch (e) {}
     }
     return {
@@ -60,12 +64,51 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
     localStorage.setItem('pcp_gantt_visible_scales', JSON.stringify(visibleScales));
   }, [visibleScales]);
 
-  const fullAssetsList = getAssetsPool(envaseLinesCount);
+  const fullAssetsList = customAssets || getAssetsPool(scaleCounts || envaseLinesCount);
   const assetsList = fullAssetsList.filter(asset => visibleScales[asset.scaleType]);
 
-  const [activeMonth, setActiveMonth] = useState<number>(() => {
+  const [activeYear, setActiveYear] = useState<number>(() => {
+    const saved = localStorage.getItem('pcp_gantt_active_year');
+    if (saved !== null) {
+      const parsed = parseInt(saved, 10);
+      if (!isNaN(parsed) && parsed >= 2020 && parsed <= 2035) return parsed;
+    }
+    return new Date().getFullYear();
+  });
+
+  useEffect(() => {
+    localStorage.setItem('pcp_gantt_active_year', String(activeYear));
+  }, [activeYear]);
+
+  const [activeMonth, setActiveMonth] = useState<number | null>(() => {
+    const saved = localStorage.getItem('pcp_gantt_active_month');
+    if (saved !== null) {
+      if (saved === 'all') return null;
+      const parsed = parseInt(saved, 10);
+      if (!isNaN(parsed) && parsed >= 0 && parsed <= 11) return parsed;
+    }
     return new Date().getMonth();
   });
+
+  useEffect(() => {
+    if (activeMonth === null) {
+      localStorage.setItem('pcp_gantt_active_month', 'all');
+    } else {
+      localStorage.setItem('pcp_gantt_active_month', String(activeMonth));
+    }
+  }, [activeMonth]);
+
+  const [showCropSeasonsModal, setShowCropSeasonsModal] = useState<boolean>(false);
+
+  // Available years dynamically derived from batches + default range 2024 to 2028
+  const availableYears = Array.from(new Set([
+    2024, 2025, 2026, 2027, 2028,
+    ...batches.map(b => {
+      const d = new Date(b.startDateTime);
+      return isNaN(d.getTime()) ? null : d.getFullYear();
+    }).filter((y): y is number => y !== null)
+  ])).sort((a, b) => a - b);
+
   const [viewMode, setViewMode] = useState<'days' | 'weeks'>('days');
   const [now, setNow] = useState<Date>(new Date());
 
@@ -77,12 +120,13 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
   }, []);
 
   useEffect(() => {
-    // Scroll to today on initial mount
+    // Scroll to active month of active year on initial mount or activeYear change
     setTimeout(() => {
-      scrollToDate(new Date(), 'auto');
+      const targetMonth = activeMonth !== null ? activeMonth : new Date().getMonth();
+      scrollToDate(new Date(activeYear, targetMonth, 1), 'auto');
     }, 150);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [activeYear]);
 
   // Month names in Portuguese for filtering
   const MONTHS_PT = [
@@ -90,11 +134,10 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
     'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'
   ];
 
-  // Helper to calculate active batches and preventatives per month of year 2026
+  // Helper to calculate active batches and preventatives per month of activeYear
   const getMonthlyStats = (monthIdx: number) => {
-    const year = 2026;
-    const startOfMonth = new Date(year, monthIdx, 1, 0, 0, 0);
-    const endOfMonth = new Date(year, monthIdx + 1, 0, 23, 59, 59, 999);
+    const startOfMonth = new Date(activeYear, monthIdx, 1, 0, 0, 0);
+    const endOfMonth = new Date(activeYear, monthIdx + 1, 0, 23, 59, 59, 999);
 
     const batchesInMonth = batches.filter(b => {
       return b.steps.some(st => {
@@ -118,7 +161,13 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
 
   const handleSelectMonth = (monthIdx: number) => {
     setActiveMonth(monthIdx);
-    scrollToDate(new Date(2026, monthIdx, 1), 'smooth');
+    scrollToDate(new Date(activeYear, monthIdx, 1), 'smooth');
+  };
+
+  const handleSelectYear = (yearVal: number) => {
+    setActiveYear(yearVal);
+    const targetMonth = activeMonth !== null ? activeMonth : 0;
+    scrollToDate(new Date(yearVal, targetMonth, 1), 'smooth');
   };
 
   const handleSwitchViewMode = (mode: 'days' | 'weeks') => {
@@ -139,6 +188,15 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
     asset?: Asset;
   } | null>(null);
 
+  const [quickScheduleData, setQuickScheduleData] = useState<{
+    asset: Asset;
+    clickedDate: Date;
+    recipeId: string;
+    anchorMode: 'clicked_asset' | 'inoculation' | 'envase';
+    opNumber: string;
+    customStartStr?: string;
+  } | null>(null);
+
   const [zoomLevel, setZoomLevel] = useState<number>(120); // Width of 1 day in pixels
 
   // State variables for Deviation / Interventions
@@ -149,6 +207,9 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
   const [delayInputStart, setDelayInputStart] = useState<string>('');
   const [delayHoursSecas, setDelayHoursSecas] = useState<number>(0);
   const [swapAssetId, setSwapAssetId] = useState<string>('');
+
+  const [isEditingLotNumber, setIsEditingLotNumber] = useState<boolean>(false);
+  const [editedLotNumber, setEditedLotNumber] = useState<string>('');
 
   // Date formatting helpers for datetimes
   function formatToDateTimeInput(d: Date): string {
@@ -167,12 +228,38 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
       setSwapAssetId(normalizeAssetId(step.assetId, envaseLinesCount));
       setDelayInputStart(formatToDateTimeInput(new Date(step.startDateTime)));
       setDelayHoursSecas(0);
+      setEditedLotNumber(selectedBlock.batch.lotNumber);
+      setIsEditingLotNumber(false);
     } else {
       setDeviationMode('none');
       setDeviationReason('');
       setDeviationNotes('');
+      setIsEditingLotNumber(false);
     }
   }, [selectedBlock, envaseLinesCount]);
+
+  const handleSaveLotNumber = () => {
+    if (!selectedBlock?.batch || !editedLotNumber.trim()) return;
+
+    const newLotNumber = editedLotNumber.trim();
+    const updatedSteps = assignStepOpNumbers(selectedBlock.batch.steps, newLotNumber);
+
+    const updatedBatch: Batch = {
+      ...selectedBlock.batch,
+      lotNumber: newLotNumber,
+      steps: updatedSteps
+    };
+
+    const updatedBatchesList = batches.map(b => b.id === updatedBatch.id ? updatedBatch : b);
+    onUpdateBatches(updatedBatchesList);
+
+    setSelectedBlock(prev => prev ? {
+      ...prev,
+      batch: updatedBatch
+    } : null);
+
+    setIsEditingLotNumber(false);
+  };
 
   // Asset occupancy checker taking setup/cleanup and other batches into account
   const isAssetBusy = (assetId: string, startStr: string, endStr: string, ignoreBatchId: string, scaleType: ScaleType) => {
@@ -365,9 +452,10 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
   const dayWidth = zoomLevel; 
   const hourWidth = dayWidth / 24;
 
-  const timelineStart = new Date('2026-01-01T00:00:00');
-  const timelineEnd = new Date('2026-12-31T23:59:59');
-  const totalDays = 365;
+  const timelineStart = new Date(`${activeYear}-01-01T00:00:00`);
+  const timelineEnd = new Date(`${activeYear}-12-31T23:59:59`);
+  const isLeapYear = (activeYear % 4 === 0 && activeYear % 100 !== 0) || (activeYear % 400 === 0);
+  const totalDays = isLeapYear ? 366 : 365;
 
   // Calculate list of days in the active viewport range
   const daysArray: Date[] = [];
@@ -400,7 +488,8 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
 
   // Automatically scroll to the active month when mounting or changing zoom level
   useEffect(() => {
-    scrollToDate(new Date(2026, activeMonth, 1), 'auto');
+    const targetMonth = activeMonth !== null ? activeMonth : 0;
+    scrollToDate(new Date(activeYear, targetMonth, 1), 'auto');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoomLevel]);
 
@@ -540,21 +629,30 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
   // Compute per-product planned and unfeasible volume statistics for BOTH Active Month & Total Accumulated
   const productVolumeSummary = recipes.map(recipe => {
     const allProductBatches = batches.filter(b => b.productId === recipe.id);
-    const totalAccumulatedBatchesCount = allProductBatches.length;
-    const totalAccumulatedVolumeLiters = totalAccumulatedBatchesCount * recipe.yieldPerBatch;
+    
+    // Filter batches belonging to activeYear
+    const yearBatches = allProductBatches.filter(b => {
+      const mainStep = b.steps.find(s => s.scaleType === 'Envase') || b.steps[0];
+      if (!mainStep) return false;
+      const d = new Date(mainStep.startDateTime);
+      return d.getFullYear() === activeYear;
+    });
 
-    // Batches whose Envase (or start) falls in the currently active month
+    const totalAccumulatedBatchesCount = yearBatches.length;
+    const totalAccumulatedVolumeLiters = yearBatches.reduce((acc, b) => acc + getBatchYield(b, recipe, customAssets || envaseLinesCount), 0);
+
+    // Batches whose Envase (or start) falls in the currently active month of activeYear
     const monthBatches = activeMonth !== null
-      ? allProductBatches.filter(b => {
+      ? yearBatches.filter(b => {
           const envaseStep = b.steps.find(s => s.scaleType === 'Envase') || b.steps[b.steps.length - 1];
           if (!envaseStep) return false;
           const d = new Date(envaseStep.startDateTime);
           return d.getMonth() === activeMonth;
         })
-      : allProductBatches;
+      : yearBatches;
 
     const monthBatchesCount = monthBatches.length;
-    const monthVolumeLiters = monthBatchesCount * recipe.yieldPerBatch;
+    const monthVolumeLiters = monthBatches.reduce((acc, b) => acc + getBatchYield(b, recipe, customAssets || envaseLinesCount), 0);
 
     const productErrors = (planningErrors || []).filter(e => e.productId === recipe.id || e.productName === recipe.name);
     const unfeasibleErrorCount = productErrors.filter(e => !e.canBypass).length;
@@ -671,10 +769,38 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
             </button>
           </div>
 
-          <div className="flex items-center bg-slate-50 p-1 rounded-lg border border-slate-200">
-            <span className="text-[9px] font-bold text-slate-500 uppercase px-2 py-1 select-none">
-              Safra Completa (2026)
+          {/* Multi-Year & Crop Season Selector */}
+          <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl border border-slate-250 shrink-0">
+            <span className="text-[10px] font-black uppercase text-slate-500 tracking-tight px-1 flex items-center gap-1">
+              🌾 Safra / Ano:
             </span>
+            <select
+              value={activeYear}
+              onChange={(e) => handleSelectYear(parseInt(e.target.value, 10))}
+              className="bg-white text-slate-900 font-mono font-extrabold text-xs px-2.5 py-1 rounded-lg border border-slate-300 focus:outline-none cursor-pointer shadow-3xs"
+            >
+              {availableYears.map(y => (
+                <option key={y} value={y}>
+                  Safra {y} {y < now.getFullYear() ? '(Histórico 🔒)' : y === now.getFullYear() ? '(🟢 Safra Ativa)' : '(Futura 🔮)'}
+                </option>
+              ))}
+            </select>
+
+            {activeYear < now.getFullYear() && (
+              <span className="text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded flex items-center gap-1" title="Ano encerrado em modo histórico de auditoria">
+                🔒 Audit
+              </span>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setShowCropSeasonsModal(true)}
+              className="px-2 py-1 bg-white hover:bg-slate-200 text-slate-700 font-bold text-[10px] rounded-lg border border-slate-250 transition-all cursor-pointer flex items-center gap-1 shadow-3xs"
+              title="Ver comparativo plurianual entre Safras"
+            >
+              <BarChart3 size={12} className="text-indigo-600" />
+              <span>Safras</span>
+            </button>
           </div>
         </div>
       </div>
@@ -833,14 +959,24 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-black inline-block"></span> PREVENTIVAS</span>
           </div>
 
-          {/* Scale Filters */}
+          {/* Scale Filters & Row Customization */}
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-[9px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1 mr-1">
-              <Eye size={12} /> Mostrar Escalas:
+              <Eye size={12} /> Ajustar Equipamentos / Escalas:
             </span>
             {(['Erlenmeyer', 'Balão', '100L', '500L', '3000_5000L', 'Envase'] as ScaleType[]).map((scale) => {
               const active = visibleScales[scale];
-              let label = scale === '3000_5000L' ? 'Tanques 5kL' : scale === 'Envase' ? 'Envase' : `Escala ${scale}`;
+              let label = scale === '3000_5000L' ? 'Tanques 5kL' : scale === 'Envase' ? 'Envase' : scale;
+              let scaleKey: keyof FactoryScaleCounts = 'envaseCount';
+              if (scale === 'Erlenmeyer') scaleKey = 'erlenmeyerCount';
+              else if (scale === 'Balão') scaleKey = 'balaoCount';
+              else if (scale === '100L') scaleKey = 'b100LCount';
+              else if (scale === '500L') scaleKey = 'b500LCount';
+              else if (scale === '3000_5000L') scaleKey = 'b5kLCount';
+              else if (scale === 'Envase') scaleKey = 'envaseCount';
+
+              const countVal = scaleCounts ? scaleCounts[scaleKey] : (scale === 'Envase' ? envaseLinesCount : 5);
+
               let scaleBadgeColor = '';
               if (scale === 'Erlenmeyer') scaleBadgeColor = active ? 'bg-teal-900 text-teal-100 border-teal-850' : 'bg-slate-100 text-slate-400 border-slate-200';
               else if (scale === 'Balão') scaleBadgeColor = active ? 'bg-sky-900 text-sky-100 border-sky-850' : 'bg-slate-100 text-slate-400 border-slate-200';
@@ -850,14 +986,37 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
               else if (scale === 'Envase') scaleBadgeColor = active ? 'bg-rose-900 text-rose-100 border-rose-800' : 'bg-slate-100 text-slate-400 border-slate-200';
 
               return (
-                <button
-                  key={scale}
-                  type="button"
-                  onClick={() => setVisibleScales(prev => ({ ...prev, [scale]: !prev[scale] }))}
-                  className={`px-2 py-1 rounded text-[10px] font-bold border transition-all cursor-pointer shadow-3xs hover:scale-[1.02] active:scale-[0.98] ${scaleBadgeColor}`}
-                >
-                  {label}
-                </button>
+                <div key={scale} className="flex items-center rounded-lg border border-slate-300 overflow-hidden shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => setVisibleScales(prev => ({ ...prev, [scale]: !prev[scale] }))}
+                    className={`px-2 py-1 text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1 ${scaleBadgeColor}`}
+                    title={`Clique para alternar visibilidade da escala ${scale}`}
+                  >
+                    <span>{label}</span>
+                    <span className="px-1 py-0.2 bg-black/20 rounded text-[9px] font-mono font-black">{countVal}</span>
+                  </button>
+                  {onUpdateScaleCount && (
+                    <div className="flex items-center bg-slate-100 border-l border-slate-300">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); onUpdateScaleCount(scaleKey, -1); }}
+                        className="px-1.5 py-1 text-[11px] font-extrabold text-slate-600 hover:bg-rose-200 hover:text-rose-900 transition-colors cursor-pointer"
+                        title={`Remover 1 linha da escala ${scale}`}
+                      >
+                        -
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); onUpdateScaleCount(scaleKey, 1); }}
+                        className="px-1.5 py-1 text-[11px] font-extrabold text-slate-600 hover:bg-emerald-200 hover:text-emerald-900 transition-colors cursor-pointer border-l border-slate-200"
+                        title={`Adicionar +1 linha na escala ${scale}`}
+                      >
+                        +
+                      </button>
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -1009,7 +1168,27 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                 return (
                   <div
                     key={asset.id}
-                    className="h-12 relative flex items-center z-0 group hover:bg-slate-50 transition-colors"
+                    className="h-12 relative flex items-center z-0 group hover:bg-indigo-50/20 transition-colors cursor-crosshair"
+                    onClick={(e) => {
+                      if ((e.target as HTMLElement).closest('button')) return;
+
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const clickX = e.clientX - rect.left;
+                      const clickedHoursFromStart = clickX / hourWidth;
+                      const clickedMs = timelineStart.getTime() + clickedHoursFromStart * 60 * 60 * 1000;
+                      const clickedDate = new Date(clickedMs);
+                      clickedDate.setMinutes(clickedDate.getMinutes() >= 30 ? 30 : 0, 0, 0);
+
+                      const defaultRecipe = recipes[0]?.id || '';
+                      setQuickScheduleData({
+                        asset,
+                        clickedDate,
+                        recipeId: defaultRecipe,
+                        anchorMode: 'clicked_asset',
+                        opNumber: `OP-${Math.floor(1000 + Math.random() * 9000)}`
+                      });
+                    }}
+                    title={`Clique no espaço em branco para agendar um lote em ${asset.name}`}
                   >
                     
                     {/* PREVENTIVE BLOCKS */}
@@ -1241,11 +1420,50 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                   <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-150">
                     <div>
                       <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest block">Lote O.P.</span>
-                      <span className="text-sm font-bold text-slate-800 font-mono">{selectedBlock.batch.lotNumber}</span>
+                      {isEditingLotNumber ? (
+                        <div className="flex items-center gap-1 mt-1">
+                          <input
+                            type="text"
+                            value={editedLotNumber}
+                            onChange={(e) => setEditedLotNumber(e.target.value)}
+                            className="px-2 py-1 bg-white border border-indigo-400 rounded font-mono font-bold text-xs text-slate-900 w-full focus:outline-hidden focus:ring-1 focus:ring-indigo-500"
+                            placeholder="Nova OP/Lote"
+                            autoFocus
+                          />
+                          <button
+                            type="button"
+                            onClick={handleSaveLotNumber}
+                            className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-bold transition-colors cursor-pointer shrink-0 flex items-center gap-0.5"
+                            title="Salvar novo número da OP"
+                          >
+                            <Check size={12} /> Salvar
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-sm font-bold text-slate-800 font-mono">{selectedBlock.batch.lotNumber}</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditedLotNumber(selectedBlock.batch!.lotNumber);
+                              setIsEditingLotNumber(true);
+                            }}
+                            className="p-1 text-slate-400 hover:text-indigo-650 hover:bg-indigo-50 rounded transition-colors cursor-pointer"
+                            title="Editar número da Ordem de Produção (OP)"
+                          >
+                            <Edit3 size={13} />
+                          </button>
+                        </div>
+                      )}
                     </div>
                     <div>
-                      <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest block">Fórmula Ativa</span>
-                      <span className="text-sm font-bold text-slate-800">{selectedBlock.product?.name}</span>
+                      <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest block">Fórmula Ativa & Volume do Lote</span>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <span className="text-sm font-bold text-slate-800">{selectedBlock.product?.name}</span>
+                        <span className="text-xs font-mono font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded" title="Volume real gerado determinado pela capacidade do reator alocado">
+                          {getBatchYield(selectedBlock.batch, selectedBlock.product, envaseLinesCount).toLocaleString('pt-BR')} L
+                        </span>
+                      </div>
                     </div>
                   </div>
 
@@ -1294,14 +1512,26 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                         return (
                           <div
                             key={i}
-                            className={`flex items-center justify-between p-2 rounded text-[10px] ${
+                            className={`flex flex-col gap-1 p-2 rounded text-[10px] ${
                               isCurrent 
-                                ? 'bg-slate-900 text-white font-bold' 
-                                : 'bg-slate-50 text-slate-600'
+                                ? 'bg-slate-900 text-white font-bold shadow-xs' 
+                                : 'bg-slate-50 text-slate-700 border border-slate-200'
                             }`}
                           >
-                            <span className="font-mono">Estágio {i + 1}: {st.scaleType}</span>
-                            <span className="font-bold">{assetName} ({st.durationHours}h)</span>
+                            <div className="flex items-center justify-between">
+                              <span className="font-mono font-bold">Estágio {i + 1}: {st.scaleType}</span>
+                              <span className="font-bold">{assetName} ({st.durationHours}h)</span>
+                            </div>
+                            <div className="flex flex-wrap items-center justify-between font-mono text-[9px] border-t border-slate-200/40 pt-1 mt-0.5 gap-2">
+                              <span className={isCurrent ? "text-amber-300 font-extrabold" : "text-indigo-600 font-bold"}>
+                                OP Etapa: <strong>{st.opNumber || `${selectedBlock.batch.lotNumber}-${st.scaleType}`}</strong>
+                              </span>
+                              {st.parentOpNumber && (
+                                <span className={isCurrent ? "text-emerald-300 font-medium" : "text-slate-500 font-medium"} title="Ordem da etapa anterior consumida/empenhada nesta escala">
+                                  🔗 Consumiu: {st.parentOpNumber}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         );
                       })}
@@ -1654,6 +1884,339 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* QUICK SCHEDULE MODAL ON TIMELINE CLICK */}
+      {quickScheduleData && (() => {
+        const recipe = recipes.find(r => r.id === quickScheduleData.recipeId) || recipes[0];
+        if (!recipe) return null;
+
+        let anchorTargetDate = quickScheduleData.customStartStr 
+          ? new Date(quickScheduleData.customStartStr) 
+          : quickScheduleData.clickedDate;
+
+        let inoculationStartDate: Date;
+        if (quickScheduleData.anchorMode === 'inoculation') {
+          inoculationStartDate = anchorTargetDate;
+        } else if (quickScheduleData.anchorMode === 'envase') {
+          inoculationStartDate = getInoculationDateForAnchoredScale(recipe, 'Envase', anchorTargetDate, 0);
+        } else {
+          inoculationStartDate = getInoculationDateForAnchoredScale(recipe, quickScheduleData.asset.scaleType, anchorTargetDate, 0);
+        }
+
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const inoculationIsoStr = `${inoculationStartDate.getFullYear()}-${pad(inoculationStartDate.getMonth() + 1)}-${pad(inoculationStartDate.getDate())}T${pad(inoculationStartDate.getHours())}:${pad(inoculationStartDate.getMinutes())}`;
+
+        const previewSteps = calculateProductionTimeline(recipe, inoculationIsoStr, 0, batches, preventatives, undefined, undefined, setupTimes, envaseLinesCount);
+
+        const handleConfirmSchedule = () => {
+          const newBatchId = `batch-${Date.now()}`;
+          const newBatchNumber = quickScheduleData.opNumber.trim() || `OP-${Math.floor(1000 + Math.random() * 9000)}`;
+
+          const stepsWithOps = assignStepOpNumbers(previewSteps, newBatchNumber);
+
+          const newBatch: Batch = {
+            id: newBatchId,
+            productId: recipe.id,
+            lotNumber: newBatchNumber,
+            startDateTime: previewSteps[0].startDateTime,
+            transferIntervalHours: 0,
+            steps: stepsWithOps
+          };
+
+          onUpdateBatches([...batches, newBatch]);
+          setQuickScheduleData(null);
+        };
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in">
+            <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-xl w-full overflow-hidden flex flex-col max-h-[90vh]">
+              {/* Header */}
+              <div className="bg-slate-900 text-white p-4 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 bg-indigo-600 rounded-lg text-white">
+                    <Sparkles size={18} />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-sm tracking-tight flex items-center gap-1.5">
+                      Programar Lote a partir do Gantt
+                    </h3>
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      Vaso Selecionado: <strong className="text-amber-300 font-bold">{quickScheduleData.asset.name}</strong> ({quickScheduleData.asset.scaleType})
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setQuickScheduleData(null)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="p-5 space-y-4 overflow-y-auto text-xs text-slate-700">
+                {/* Product Selection */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                    Selecione a Fórmula / Produto
+                  </label>
+                  <select
+                    value={quickScheduleData.recipeId}
+                    onChange={(e) => setQuickScheduleData(prev => prev ? { ...prev, recipeId: e.target.value } : null)}
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-bold text-slate-800 focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                  >
+                    {recipes.map(r => (
+                      <option key={r.id} value={r.id}>
+                        {r.name} (Rendimento: {r.yieldPerBatch.toLocaleString('pt-BR')} L)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* OP Number input */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                      Número da Ordem (OP)
+                    </label>
+                    <input
+                      type="text"
+                      value={quickScheduleData.opNumber}
+                      onChange={(e) => setQuickScheduleData(prev => prev ? { ...prev, opNumber: e.target.value } : null)}
+                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-mono font-bold text-slate-900 focus:ring-2 focus:ring-indigo-500"
+                      placeholder="ex: OP-9040"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                      Data/Hora Clicada
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={quickScheduleData.customStartStr || formatToDateTimeInput(quickScheduleData.clickedDate)}
+                      onChange={(e) => setQuickScheduleData(prev => prev ? { ...prev, customStartStr: e.target.value } : null)}
+                      className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-xl font-mono font-bold text-slate-800 text-[11px]"
+                    />
+                  </div>
+                </div>
+
+                {/* Anchor Mode Options */}
+                <div className="space-y-1.5 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                    Modo de Encaixe e Calibração da Cascata
+                  </label>
+                  <div className="space-y-2 pt-1">
+                    <label className="flex items-center gap-2 cursor-pointer font-semibold text-slate-800 text-[11px]">
+                      <input
+                        type="radio"
+                        name="anchorMode"
+                        checked={quickScheduleData.anchorMode === 'clicked_asset'}
+                        onChange={() => setQuickScheduleData(prev => prev ? { ...prev, anchorMode: 'clicked_asset' } : null)}
+                        className="text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>
+                        Ancorar etapa no vaso clicado (<strong className="text-indigo-700">{quickScheduleData.asset.name}</strong>)
+                      </span>
+                    </label>
+
+                    <label className="flex items-center gap-2 cursor-pointer font-semibold text-slate-800 text-[11px]">
+                      <input
+                        type="radio"
+                        name="anchorMode"
+                        checked={quickScheduleData.anchorMode === 'inoculation'}
+                        onChange={() => setQuickScheduleData(prev => prev ? { ...prev, anchorMode: 'inoculation' } : null)}
+                        className="text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>
+                        Iniciar Inoculação (Erlenmeyer) neste horário
+                      </span>
+                    </label>
+
+                    <label className="flex items-center gap-2 cursor-pointer font-semibold text-slate-800 text-[11px]">
+                      <input
+                        type="radio"
+                        name="anchorMode"
+                        checked={quickScheduleData.anchorMode === 'envase'}
+                        onChange={() => setQuickScheduleData(prev => prev ? { ...prev, anchorMode: 'envase' } : null)}
+                        className="text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>
+                        Concluir/Iniciar Envase neste horário (Cálculo Regressivo)
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Live Cascade Preview */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+                      <Clock size={12} /> Prévia da Rota em Cascata ({previewSteps.length} Estágios)
+                    </span>
+                    <span className="text-[10px] font-mono text-indigo-700 font-bold bg-indigo-50 px-2 py-0.5 rounded">
+                      Inoculação: {formatShortDate(previewSteps[0].startDateTime)}
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                    {previewSteps.map((st, idx) => {
+                      const isAnchoredStep = st.scaleType === quickScheduleData.asset.scaleType && quickScheduleData.anchorMode === 'clicked_asset';
+                      const assetName = assetsList.find(a => a.id === normalizeAssetId(st.assetId, envaseLinesCount))?.name || 'Automático';
+
+                      return (
+                        <div
+                          key={idx}
+                          className={`p-2 rounded-lg text-[10px] flex items-center justify-between font-mono ${
+                            isAnchoredStep
+                              ? 'bg-indigo-900 text-white font-extrabold shadow-sm ring-1 ring-indigo-400'
+                              : 'bg-slate-50 border border-slate-200 text-slate-700'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold">{st.scaleType}</span>
+                            {isAnchoredStep && (
+                              <span className="bg-amber-400 text-slate-950 text-[8px] font-black uppercase px-1 rounded">
+                                📍 Vaso Clicado
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-3">
+                            <span>{assetName}</span>
+                            <span className={isAnchoredStep ? 'text-amber-200' : 'text-slate-500'}>
+                              {formatShortDate(st.startDateTime)} ➔ {formatShortDate(st.endDateTime)} ({st.durationHours}h)
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={() => setQuickScheduleData(null)}
+                  className="px-4 py-2 text-slate-600 font-semibold hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleConfirmSchedule}
+                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs shadow-md transition-all cursor-pointer flex items-center gap-1.5 hover:scale-[1.02] active:scale-[0.98]"
+                >
+                  <Sparkles size={15} /> 🚀 Confirmar e Encaixar Lote no Gantt
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* CROP SEASONS MULTI-YEAR COMPARISON MODAL */}
+      {showCropSeasonsModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4" id="crop-seasons-modal">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-2xl w-full overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="bg-slate-900 text-white px-6 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <BarChart3 size={20} className="text-indigo-400" />
+                <h3 className="font-bold text-base">Comparativo Plurianual de Safras (Histórico & Futuro)</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCropSeasonsModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded transition-colors cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <p className="text-xs text-slate-600 font-medium">
+                Consolidado histórico de volume total produzido e quantidade de lotes sequenciados em cada Safra Industrial:
+              </p>
+
+              <div className="space-y-3">
+                {availableYears.map(yr => {
+                  const yearBatches = batches.filter(b => {
+                    const mainStep = b.steps.find(s => s.scaleType === 'Envase') || b.steps[0];
+                    if (!mainStep) return false;
+                    const d = new Date(mainStep.startDateTime);
+                    return d.getFullYear() === yr;
+                  });
+
+                  const isCurrent = yr === now.getFullYear();
+                  const isPast = yr < now.getFullYear();
+                  const totalVol = yearBatches.reduce((acc, b) => {
+                    const rec = recipes.find(r => r.id === b.productId);
+                    return acc + getBatchYield(b, rec, customAssets || envaseLinesCount);
+                  }, 0);
+
+                  return (
+                    <div key={yr} className={`p-4 rounded-xl border flex items-center justify-between transition-all ${
+                      isCurrent
+                        ? 'bg-indigo-50/70 border-indigo-300 shadow-2xs'
+                        : isPast
+                        ? 'bg-slate-50 border-slate-200'
+                        : 'bg-emerald-50/50 border-emerald-200'
+                    }`}>
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm font-mono text-slate-800">Safra {yr}</span>
+                          {isCurrent && (
+                            <span className="px-2 py-0.5 bg-indigo-600 text-white rounded text-[10px] font-bold">🟢 Safra Ativa</span>
+                          )}
+                          {isPast && (
+                            <span className="px-2 py-0.5 bg-slate-200 text-slate-700 rounded text-[10px] font-bold">🔒 Encerrada</span>
+                          )}
+                          {!isCurrent && !isPast && (
+                            <span className="px-2 py-0.5 bg-emerald-600 text-white rounded text-[10px] font-bold">🔮 Futura</span>
+                          )}
+                        </div>
+                        <span className="text-xs font-medium text-slate-500">
+                          {yearBatches.length} lote(s) programados
+                        </span>
+                      </div>
+
+                      <div className="text-right font-mono">
+                        <span className="text-base font-extrabold text-slate-900 block">
+                          {totalVol.toLocaleString('pt-BR')} L
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleSelectYear(yr);
+                            setShowCropSeasonsModal(false);
+                          }}
+                          className="text-[11px] font-bold text-indigo-600 hover:text-indigo-900 hover:underline cursor-pointer"
+                        >
+                          Abrir Safra no Gantt &rarr;
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowCropSeasonsModal(false)}
+                className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
+              >
+                Fechar
+              </button>
             </div>
           </div>
         </div>

@@ -4,16 +4,17 @@
  */
 
 import React, { useState } from 'react';
-import { ProductRecipe, StepDefinition, ScaleType, COLOR_OPTIONS } from '../types';
+import { ProductRecipe, StepDefinition, ScaleType, COLOR_OPTIONS, Asset } from '../types';
 import { Plus, Trash2, ArrowUp, ArrowDown, Edit3, Check, RotateCcw } from 'lucide-react';
 
 interface ProductFormProps {
   recipes: ProductRecipe[];
   onSaveRecipe: (recipe: ProductRecipe) => void;
   onDeleteRecipe: (id: string) => void;
+  customAssets?: Asset[];
 }
 
-const SCALE_TYPES_LIST: ScaleType[] = [
+const ALL_SCALE_TYPES_LIST: ScaleType[] = [
   'Erlenmeyer',
   'Balão',
   '100L',
@@ -22,11 +23,17 @@ const SCALE_TYPES_LIST: ScaleType[] = [
   'Envase'
 ];
 
-export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: ProductFormProps) {
+export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, customAssets }: ProductFormProps) {
+  const availableScaleTypes = customAssets && customAssets.length > 0 
+    ? ALL_SCALE_TYPES_LIST.filter(s => customAssets.some(a => a.scaleType === s)) 
+    : ALL_SCALE_TYPES_LIST;
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [color, setColor] = useState('blue');
-  const [yieldPerBatch, setYieldPerBatch] = useState<number>(3000);
+  const [yieldPerBatch, setYieldPerBatch] = useState<number>(48000);
+  const [yield3kL, setYield3kL] = useState<number | undefined>(28800);
+  const [yield500L, setYield500L] = useState<number | undefined>(undefined);
+  const [yield100L, setYield100L] = useState<number | undefined>(undefined);
   const [steps, setSteps] = useState<StepDefinition[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -41,7 +48,10 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: P
     setEditingId('new');
     setName('');
     setColor('blue');
-    setYieldPerBatch(4000);
+    setYieldPerBatch(48000);
+    setYield3kL(28800);
+    setYield500L(undefined);
+    setYield100L(undefined);
     setSteps([
       { id: 'step-' + Date.now() + '-1', scaleType: 'Erlenmeyer', durationHours: 24 },
       { id: 'step-' + Date.now() + '-2', scaleType: 'Balão', durationHours: 24 },
@@ -61,7 +71,10 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: P
     setEditingId(recipe.id);
     setName(recipe.name);
     setColor(recipe.color);
-    setYieldPerBatch(recipe.yieldPerBatch || 3000);
+    setYieldPerBatch(recipe.yieldPerBatch || 48000);
+    setYield3kL(recipe.yield3kL !== undefined ? recipe.yield3kL : Math.round((recipe.yieldPerBatch || 48000) * (3000 / 5000)));
+    setYield500L(recipe.yield500L);
+    setYield100L(recipe.yield100L);
     setSteps([...recipe.steps]);
     setFermentationTimeHours(recipe.fermentationTimeHours || 72);
     setCipSipTimeHours(recipe.cipSipTimeHours || 8);
@@ -133,6 +146,9 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: P
       name: name.trim(),
       color,
       yieldPerBatch,
+      yield3kL: yield3kL && yield3kL > 0 ? yield3kL : undefined,
+      yield500L: yield500L && yield500L > 0 ? yield500L : undefined,
+      yield100L: yield100L && yield100L > 0 ? yield100L : undefined,
       steps,
       fermentationTimeHours,
       cipSipTimeHours,
@@ -142,7 +158,8 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: P
 
     setEditingId(null);
     setName('');
-    setYieldPerBatch(3000);
+    setYieldPerBatch(48000);
+    setYield3kL(28800);
     setSteps([]);
     setFermentationTimeHours(72);
     setCipSipTimeHours(8);
@@ -191,9 +208,9 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: P
               </div>
             )}
 
-            {/* Basic Info */}
+            {/* Basic Info & Reactor Specific Yields */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="space-y-2 col-span-1">
+              <div className="space-y-2 col-span-2">
                 <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block">Nome do Produto</label>
                 <input
                   type="text"
@@ -206,18 +223,6 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: P
               </div>
 
               <div className="space-y-2 col-span-1">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block">Rendimento por Lote (L / Doses)</label>
-                <input
-                  type="number"
-                  min="1"
-                  value={yieldPerBatch}
-                  onChange={(e) => setYieldPerBatch(Math.max(1, parseInt(e.target.value) || 1))}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-800 transition-shadow"
-                  required
-                />
-              </div>
-
-              <div className="space-y-2 col-span-1">
                 <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block">ID Visual no Gantt (Cor)</label>
                 <div className="flex flex-wrap gap-1.5 pt-1">
                   {COLOR_OPTIONS.map((opt) => (
@@ -225,67 +230,62 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: P
                       key={opt.value}
                       type="button"
                       onClick={() => setColor(opt.value)}
-                      className={`w-7 h-7 rounded-full ${opt.bg} flex items-center justify-center border transition-all cursor-pointer ${
-                        color === opt.value ? 'border-amber-400 scale-110 shadow' : 'border-slate-200 hover:scale-105'
+                      className={`w-6 h-6 rounded-full ${opt.bg} border ${opt.border} transition-transform ${
+                        color === opt.value ? 'scale-125 ring-2 ring-slate-800 ring-offset-1' : 'hover:scale-110'
                       }`}
                       title={opt.label}
-                    >
-                      {color === opt.value && <Check size={12} className="text-white" />}
-                    </button>
+                    />
                   ))}
                 </div>
               </div>
             </div>
 
-            {/* RCCP Capacity Parameters Grid Section */}
-            <div className="bg-slate-50/50 border border-slate-200 rounded-2xl p-4 space-y-4">
-              <span className="text-[10px] font-extrabold text-slate-650 uppercase tracking-wider block border-b border-slate-200 pb-1.5">
-                Parâmetros de Capacidade do Biorreator (RCCP)
-              </span>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Volume Nominal Lote (L)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={batchVolume}
-                    onChange={(e) => setBatchVolume(Math.max(1, parseInt(e.target.value) || 1))}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                    required
-                  />
+            {/* Yields per Bioreactor Scale */}
+            <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+              <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                <span className="text-xs font-extrabold uppercase text-slate-700 tracking-wider">
+                  🧪 Volume de Rendimento Acabado por Lote (L)
+                </span>
+                <span className="text-[10px] text-slate-400 font-medium">
+                  Determina o volume total gerado no Dashboard de acordo com o tanque alocado.
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-tight block">
+                    Rendimento em Biorreatores 5.000L (B11 a B14)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="1"
+                      value={yieldPerBatch}
+                      onChange={(e) => setYieldPerBatch(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-sm font-mono font-bold text-slate-800 focus:outline-none focus:border-slate-800"
+                      required
+                    />
+                    <span className="text-xs font-bold text-slate-500 font-mono">L</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 block">Ex: 48.000 Litros em tanque de 5kL.</span>
                 </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Tempo Reação (hs)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={fermentationTimeHours}
-                    onChange={(e) => setFermentationTimeHours(Math.max(0, parseInt(e.target.value) || 0))}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                    required
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Tempo CIP / SIP (hs)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={cipSipTimeHours}
-                    onChange={(e) => setCipSipTimeHours(Math.max(0, parseInt(e.target.value) || 0))}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                    required
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Carga / Descarga (hs)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={chargeDischargeTimeHours}
-                    onChange={(e) => setChargeDischargeTimeHours(Math.max(0, parseInt(e.target.value) || 0))}
-                    className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                    required
-                  />
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-tight block">
+                    Rendimento em Biorreatores 3.000L (B15 e B16)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="1"
+                      value={yield3kL !== undefined ? yield3kL : ''}
+                      onChange={(e) => setYield3kL(e.target.value ? Math.max(1, parseInt(e.target.value)) : undefined)}
+                      placeholder={`Prop. 3/5: ${Math.round(yieldPerBatch * (3000 / 5000)).toLocaleString('pt-BR')} L`}
+                      className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-sm font-mono font-bold text-slate-800 focus:outline-none focus:border-slate-800"
+                    />
+                    <span className="text-xs font-bold text-slate-500 font-mono">L</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 block">Ex: 28.800 Litros em tanque de 3kL (Deixe vazio para proporcional automático).</span>
                 </div>
               </div>
             </div>
@@ -320,7 +320,7 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe }: P
                           onChange={(e) => handleStepChange(index, { scaleType: e.target.value as ScaleType })}
                           className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:outline-none"
                         >
-                          {SCALE_TYPES_LIST.map(type => (
+                          {availableScaleTypes.map(type => (
                             <option key={type} value={type}>
                               {type === '3000_5000L' ? 'Tanque 3000L/5000L' : type === 'Envase' ? 'Linha Envase / Quality' : type}
                             </option>

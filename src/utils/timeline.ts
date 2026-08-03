@@ -155,6 +155,69 @@ export function calculateProductionTimeline(
 }
 
 /**
+ * Recalculates the inoculation start date given a target date for any anchored scale
+ */
+export function getInoculationDateForAnchoredScale(
+  recipe: ProductRecipe,
+  scaleType: ScaleType,
+  targetDate: Date,
+  transferIntervalHours: number = 0
+): Date {
+  const stepsDef = recipe.steps;
+  const targetStepIndex = stepsDef.findIndex(s => s.scaleType === scaleType);
+  
+  if (targetStepIndex <= 0) {
+    return new Date(targetDate);
+  }
+
+  let priorHours = 0;
+  for (let i = 0; i < targetStepIndex; i++) {
+    priorHours += stepsDef[i].durationHours;
+    priorHours += transferIntervalHours;
+  }
+
+  const inoculationMs = targetDate.getTime() - priorHours * 60 * 60 * 1000;
+  return new Date(inoculationMs);
+}
+
+/**
+ * Computes the real volume yielded by a batch based on its allocated bioreactor asset capacity (e.g. 5000L vs 3000L vs custom).
+ * If the recipe defines specific yields per scale (e.g. yield3kL), it uses the custom recipe yield.
+ * Otherwise, it scales proportionally based on asset capacity relative to 5000L.
+ */
+export function getBatchYield(batch: Batch, recipe?: ProductRecipe, assetsOrEnvaseCount?: Asset[] | number): number {
+  if (!recipe) return 5000;
+  if (!batch || !batch.steps || batch.steps.length === 0) {
+    return recipe.yieldPerBatch || 5000;
+  }
+
+  const fermentsStep = batch.steps.find(s => s.scaleType === '3000_5000L') || batch.steps.find(s => s.scaleType === '500L');
+  if (fermentsStep && fermentsStep.assetId) {
+    const envaseCount = typeof assetsOrEnvaseCount === 'number' ? assetsOrEnvaseCount : 3;
+    const assets = Array.isArray(assetsOrEnvaseCount) ? assetsOrEnvaseCount : getAssetsPool(envaseCount);
+    const asset = assets.find(a => normalizeAssetId(a.id, envaseCount) === normalizeAssetId(fermentsStep.assetId, envaseCount));
+    
+    if (asset && asset.capacityLiters) {
+      if (asset.capacityLiters === 3000 && recipe.yield3kL !== undefined && recipe.yield3kL > 0) {
+        return recipe.yield3kL;
+      }
+      if (asset.capacityLiters === 500 && recipe.yield500L !== undefined && recipe.yield500L > 0) {
+        return recipe.yield500L;
+      }
+      if (asset.capacityLiters === 100 && recipe.yield100L !== undefined && recipe.yield100L > 0) {
+        return recipe.yield100L;
+      }
+      if (asset.capacityLiters === 5000) {
+        return recipe.yieldPerBatch;
+      }
+      return Math.round((recipe.yieldPerBatch || 5000) * (asset.capacityLiters / 5000));
+    }
+  }
+
+  return recipe.yieldPerBatch || 5000;
+}
+
+/**
  * Parses and formats dates for display
  */
 export function formatFullDate(isoString: string): string {
@@ -497,6 +560,35 @@ export function getInoculationDateFromEnvaseStart(
  * Generates an automatic campaign timeline for a target volume,
  * implementing staggered scheduling based on packaging line availability and backward offsets.
  */
+export function assignStepOpNumbers(steps: ScheduledStep[], lotNumber: string): ScheduledStep[] {
+  return steps.map((step, idx) => {
+    let scaleSuffix = '';
+    switch (step.scaleType) {
+      case 'Erlenmeyer': scaleSuffix = '-ERL'; break;
+      case 'Balão': scaleSuffix = '-BAL'; break;
+      case '100L': scaleSuffix = '-100L'; break;
+      case '500L': scaleSuffix = '-500L'; break;
+      case '3000_5000L': scaleSuffix = '-5K'; break;
+      case 'Envase': scaleSuffix = '-ENV'; break;
+      default: scaleSuffix = `-${step.scaleType}`; break;
+    }
+
+    const opNumber = step.scaleType === 'Envase' ? lotNumber : `${lotNumber}${scaleSuffix}`;
+
+    let parentOpNumber: string | undefined = undefined;
+    if (idx > 0) {
+      const prevStep = steps[idx - 1];
+      parentOpNumber = prevStep.scaleType === 'Envase' ? lotNumber : `${lotNumber}-${prevStep.scaleType === '3000_5000L' ? '5K' : prevStep.scaleType.toUpperCase().substring(0, 4)}`;
+    }
+
+    return {
+      ...step,
+      opNumber,
+      parentOpNumber
+    };
+  });
+}
+
 export function generateAutomaticPlanning(
   recipe: ProductRecipe,
   targetVolume: number,
@@ -505,7 +597,9 @@ export function generateAutomaticPlanning(
   preventatives: Preventative[],
   shiftConfig: ShiftConfig,
   setupTimes?: Record<ScaleType, number>,
-  envaseLinesCount?: number
+  envaseLinesCount?: number,
+  customOpNumbers?: string[],
+  opPrefix?: string
 ): {
   scheduledBatches: Batch[];
   outOfShiftBatches: Batch[];
@@ -518,7 +612,7 @@ export function generateAutomaticPlanning(
   
   const batchesNeeded = Math.ceil(targetVolume / recipe.yieldPerBatch);
   if (batchesNeeded <= 0) {
-    return { scheduledBatches, outOfShiftBatches, errors };
+    return { scheduledBatches, outOfShiftBatches, errors: [] };
   }
 
   // Create active pool copying existing schedule
@@ -527,7 +621,22 @@ export function generateAutomaticPlanning(
   const scanLimitHours = 1080; // 45 days search window
 
   for (let lotIdx = 0; lotIdx < batchesNeeded; lotIdx++) {
-    const lotNumber = `${recipe.name.substring(0, 3).toUpperCase()}-L${String(1000 + lotIdx + 1).substring(1)}`;
+    let lotNumber = `${recipe.name.substring(0, 3).toUpperCase()}-L${String(1000 + lotIdx + 1).substring(1)}`;
+
+    if (customOpNumbers && customOpNumbers[lotIdx]) {
+      lotNumber = customOpNumbers[lotIdx].trim();
+    } else if (opPrefix && opPrefix.trim()) {
+      const cleanPrefix = opPrefix.trim();
+      const matchNumber = cleanPrefix.match(/^(.*?)(\d+)$/);
+      if (matchNumber) {
+        const prefixText = matchNumber[1];
+        const numVal = parseInt(matchNumber[2], 10) + lotIdx;
+        const padLen = matchNumber[2].length;
+        lotNumber = `${prefixText}${String(numVal).padStart(padLen, '0')}`;
+      } else {
+        lotNumber = `${cleanPrefix}-${lotIdx + 1}`;
+      }
+    }
 
     let baseStartMs = new Date(startDateStr).getTime();
     if (lotIdx > 0) {
@@ -600,13 +709,14 @@ export function generateAutomaticPlanning(
     }
 
     if (lotScheduled && foundPerfectStart && foundPerfectSteps.length > 0) {
+      const stepsWithOps = assignStepOpNumbers(foundPerfectSteps, lotNumber);
       const newBatch: Batch = {
         id: `auto-batch-${recipe.id}-${Date.now()}-${lotIdx}`,
         lotNumber,
         productId: recipe.id,
         startDateTime: foundPerfectStart,
         transferIntervalHours: 0,
-        steps: foundPerfectSteps
+        steps: stepsWithOps
       };
 
       scheduledBatches.push(newBatch);
@@ -616,13 +726,14 @@ export function generateAutomaticPlanning(
       const chosenStart = foundFlexibleStart || foundBypassStart;
 
       if (chosenSteps.length > 0 && chosenStart) {
+        const stepsWithOps = assignStepOpNumbers(chosenSteps, lotNumber);
         const newBatch: Batch = {
           id: `auto-batch-bypass-${recipe.id}-${Date.now()}-${lotIdx}`,
           lotNumber,
           productId: recipe.id,
           startDateTime: chosenStart,
           transferIntervalHours: 0,
-          steps: chosenSteps
+          steps: stepsWithOps
         };
 
         outOfShiftBatches.push(newBatch);

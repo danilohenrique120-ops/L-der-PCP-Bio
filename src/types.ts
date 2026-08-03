@@ -15,22 +15,15 @@ export interface ProductRecipe {
   id: string;
   name: string;
   color: string; // Tailwind color name like 'blue', 'emerald', 'amber', 'purple', 'rose', etc.
-  yieldPerBatch: number; // Volume yielded per batch in liters/doses
+  yieldPerBatch: number; // Standard / 5kL Volume yielded per batch in liters
+  yield3kL?: number;     // Custom volume yielded when fermented in a 3kL reactor
+  yield500L?: number;    // Custom volume yielded when fermented in a 500L reactor
+  yield100L?: number;    // Custom volume yielded when fermented in a 100L reactor
   steps: StepDefinition[];
   fermentationTimeHours?: number;
   cipSipTimeHours?: number;
   chargeDischargeTimeHours?: number;
   batchVolume?: number;
-}
-
-export interface CapacityParams {
-  workingDaysPerMonth: number;
-  shiftsPerDay: number;
-  hoursPerShift: number;
-  maintenanceHoursPerMonth: number;
-  bioreactorCount: number;
-  fillingMachineCount: number;
-  fillingFlowRateLPH: number;
 }
 
 export interface Shift {
@@ -61,6 +54,7 @@ export interface Asset {
   name: string;
   scaleType: ScaleType;
   categoryLabel: string;
+  capacityLiters?: number;
 }
 
 export interface ScheduledStep {
@@ -69,6 +63,8 @@ export interface ScheduledStep {
   startDateTime: string; // ISO String
   endDateTime: string;   // ISO String
   assetId: string;       // Assigned asset ID (e.g. 'B01', 'Rota 0')
+  opNumber?: string;       // Dedicated OP for this scale/step
+  parentOpNumber?: string; // Consumed/Empenhada OP from previous scale
 }
 
 export interface Batch {
@@ -106,44 +102,85 @@ export interface Preventative {
   endDateTime: string;   // ISO String
 }
 
-// Fixed industrial process assets mapping
-export function getAssetsPool(envaseCount: number = 3): Asset[] {
+export interface FactoryScaleCounts {
+  erlenmeyerCount: number; // Rotas 0 a N-1
+  balaoCount: number;      // Rotas 1 a N
+  b100LCount: number;      // Biorreatores 100L
+  b500LCount: number;      // Biorreatores 500L
+  b5kLCount: number;       // Biorreatores 3000L/5000L
+  envaseCount: number;     // Máquinas de Envase
+}
+
+export const DEFAULT_SCALE_COUNTS: FactoryScaleCounts = {
+  erlenmeyerCount: 9,
+  balaoCount: 6,
+  b100LCount: 5,
+  b500LCount: 5,
+  b5kLCount: 6,
+  envaseCount: 3
+};
+
+// Configurable industrial process assets mapping
+export function getAssetsPool(counts?: Partial<FactoryScaleCounts> | number): Asset[] {
+  const c = typeof counts === 'number' 
+    ? { ...DEFAULT_SCALE_COUNTS, envaseCount: counts } 
+    : { ...DEFAULT_SCALE_COUNTS, ...(counts || {}) };
+
+  const erlenCount = Math.max(0, c.erlenmeyerCount);
+  const balaoCount = Math.max(0, c.balaoCount);
+  const b100Count = Math.max(0, c.b100LCount);
+  const b500Count = Math.max(0, c.b500LCount);
+  const b5kCount = Math.max(0, c.b5kLCount);
+  const envaseCount = Math.max(1, c.envaseCount);
+
   return [
-    // Erlenmeyer (Rota 0 a 8)
-    ...Array.from({ length: 9 }, (_, i) => ({
+    // Erlenmeyer (Rota 0 a N-1)
+    ...Array.from({ length: erlenCount }, (_, i) => ({
       id: `erlen-r${i}`,
       name: `Erlen - Rota ${i}`,
       scaleType: 'Erlenmeyer' as const,
-      categoryLabel: 'Erlenmeyer (Rotas 0-8)'
+      categoryLabel: `Erlenmeyer (Rotas 0-${erlenCount - 1})`
     })),
-    // Balão (Rota 1 a 6)
-    ...Array.from({ length: 6 }, (_, i) => ({
+    // Balão (Rota 1 a N)
+    ...Array.from({ length: balaoCount }, (_, i) => ({
       id: `balao-r${i + 1}`,
       name: `Balão - Rota ${i + 1}`,
       scaleType: 'Balão' as const,
-      categoryLabel: 'Balão (Rotas 1-6)'
+      categoryLabel: `Balão (Rotas 1-${balaoCount})`
     })),
-    // Tanques 100L (B01 a B05)
-    ...Array.from({ length: 5 }, (_, i) => ({
-      id: `B0${i + 1}`,
-      name: `B0${i + 1} (100L)`,
+    // Tanques 100L
+    ...Array.from({ length: b100Count }, (_, i) => ({
+      id: `B${String(i + 1).padStart(2, '0')}`,
+      name: `B${String(i + 1).padStart(2, '0')} (100L)`,
       scaleType: '100L' as const,
-      categoryLabel: 'Tanques 100L'
+      categoryLabel: 'Tanques 100L',
+      capacityLiters: 100
     })),
-    // Tanques 500L (B06 a B10)
-    ...Array.from({ length: 5 }, (_, i) => ({
-      id: `B${String(i + 6).padStart(2, '0')}`,
-      name: `B${String(i + 6).padStart(2, '0')} (500L)`,
-      scaleType: '500L' as const,
-      categoryLabel: 'Tanques 500L'
-    })),
-    // Tanques 5000L/3000L (B11 a B16)
-    ...Array.from({ length: 6 }, (_, i) => ({
-      id: `B${i + 11}`,
-      name: `B${i + 11} (3k/5kL)`,
-      scaleType: '3000_5000L' as const,
-      categoryLabel: 'Tanques 3000L/5000L'
-    })),
+    // Tanques 500L
+    ...Array.from({ length: b500Count }, (_, i) => {
+      const num = String(i + 1 + b100Count).padStart(2, '0');
+      return {
+        id: `B${num}`,
+        name: `B${num} (500L)`,
+        scaleType: '500L' as const,
+        categoryLabel: 'Tanques 500L',
+        capacityLiters: 500
+      };
+    }),
+    // Tanques 5000L / 3000L (B11 a B14 = 5kL, B15 a B16 = 3kL)
+    ...Array.from({ length: b5kCount }, (_, i) => {
+      const num = i + 1 + b100Count + b500Count;
+      const is3k = (num === 15 || num === 16);
+      const cap = is3k ? 3000 : 5000;
+      const labelCap = is3k ? '3kL' : '5kL';
+      return {
+        id: `B${num}`,
+        name: `B${num} (${labelCap})`,
+        scaleType: '3000_5000L' as const,
+        categoryLabel: 'Tanques 3000L/5000L',
+        capacityLiters: cap
+      };
+    }),
     // Linha de Envase - 1 linha por máquina física
     ...Array.from({ length: envaseCount }, (_, i) => ({
       id: `envase-m${i + 1}`,

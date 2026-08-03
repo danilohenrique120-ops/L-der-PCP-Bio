@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { ProductRecipe, Batch, Preventative, COLOR_OPTIONS, ScaleType, ShiftConfig, PlanningErrorLog, Shift, DeviationLog, CapacityParams } from './types';
+import { ProductRecipe, Batch, Preventative, COLOR_OPTIONS, ScaleType, ShiftConfig, PlanningErrorLog, Shift, DeviationLog } from './types';
 import { INITIAL_RECIPES, INITIAL_PREVENTATIVES, getInitialBatches } from './data/mockData';
 import { areIntervalsOverlapping, generateAutomaticPlanning, calculateProductionTimeline, formatFullDate, findBestStartTimes, StartTimeSuggestion, ProductSuggestionDetail, getInoculationDateFromEnvaseStart } from './utils/timeline';
 import GanttTimeline from './components/GanttTimeline';
@@ -14,19 +14,123 @@ import { auth, getTenantDb } from "./firebase";
 import BatchForm from './components/BatchForm';
 import ProductForm from './components/ProductForm';
 import PreventativeForm from './components/PreventativeForm';
+import IndustrialAssetsManager from './components/IndustrialAssetsManager';
 import { AlertTriangle, Calendar, PlayCircle, Layers, ShieldX, HelpCircle, AlertOctagon, CheckCircle, BarChart3, Database, RefreshCw, XCircle, Trash2, Clock, CalendarDays, Sliders, ChevronUp, ChevronDown, X } from 'lucide-react';
-import { getAssetsPool, normalizeAssetId } from './types';
+import { getAssetsPool, normalizeAssetId, FactoryScaleCounts, DEFAULT_SCALE_COUNTS, Asset } from './types';
 
 export default function App() {
-  // Tabs: 'gantt' | 'batch' | 'product' | 'preventatives' | 'deviations' | 'capacity'
-  const [activeTab, setActiveTab] = useState<'gantt' | 'batch' | 'product' | 'preventatives' | 'deviations' | 'capacity'>('gantt');
+  // Tabs: 'gantt' | 'batch' | 'product' | 'preventatives' | 'deviations'
+  const [activeTab, setActiveTab] = useState<'gantt' | 'batch' | 'product' | 'preventatives' | 'deviations'>('gantt');
 
   // Core application states loaded from Firestore multi-tenant configs
   const [recipes, setRecipes] = useState<ProductRecipe[]>([]);
-  const [batches, setBatches] = useState<Batch[]>([]);
+  const [batches, setBatches] = useState<Batch[]>(() => {
+    const saved = localStorage.getItem('pcp_batches');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch (e) {}
+    }
+    return getInitialBatches();
+  });
+
+  useEffect(() => {
+    if (batches.length > 0) {
+      localStorage.setItem('pcp_batches', JSON.stringify(batches));
+    }
+  }, [batches]);
   const [preventatives, setPreventatives] = useState<Preventative[]>([]);
   const [deviations, setDeviations] = useState<DeviationLog[]>([]);
+  const [scaleCounts, setScaleCounts] = useState<FactoryScaleCounts>(() => {
+    const saved = localStorage.getItem('pcp_scale_counts');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') return { ...DEFAULT_SCALE_COUNTS, ...parsed };
+      } catch (e) {}
+    }
+    return DEFAULT_SCALE_COUNTS;
+  });
+
   const [envaseLinesCount, setEnvaseLinesCount] = useState<number>(3);
+
+  useEffect(() => {
+    localStorage.setItem('pcp_scale_counts', JSON.stringify(scaleCounts));
+    setEnvaseLinesCount(scaleCounts.envaseCount);
+  }, [scaleCounts]);
+
+  const handleUpdateScaleCount = (scale: keyof FactoryScaleCounts, delta: number) => {
+    setScaleCounts(prev => {
+      const current = prev[scale] || 0;
+      const nextVal = Math.max(0, Math.min(30, current + delta));
+      return { ...prev, [scale]: nextVal };
+    });
+  };
+
+  const [customAssets, setCustomAssets] = useState<Asset[]>(() => {
+    const saved = localStorage.getItem('pcp_custom_assets');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch (e) {}
+    }
+    return getAssetsPool(scaleCounts);
+  });
+
+  useEffect(() => {
+    localStorage.setItem('pcp_custom_assets', JSON.stringify(customAssets));
+  }, [customAssets]);
+
+  const handleUpdateAsset = (id: string, name: string, capacityLiters?: number) => {
+    setCustomAssets(prev => prev.map(a => a.id === id ? { ...a, name, capacityLiters: capacityLiters !== undefined ? capacityLiters : a.capacityLiters } : a));
+  };
+
+  const handleAddAsset = (scaleType: ScaleType, name?: string, capacityLiters?: number) => {
+    setCustomAssets(prev => {
+      const scaleItems = prev.filter(a => a.scaleType === scaleType);
+      const nextIdx = scaleItems.length + 1;
+      let newId = `${scaleType.toLowerCase()}-custom-${Date.now()}`;
+      let defaultCap = capacityLiters;
+
+      if (scaleType === '3000_5000L') {
+        newId = `B${10 + nextIdx + 5}`;
+        defaultCap = defaultCap || 5000;
+      } else if (scaleType === '500L') {
+        newId = `B${String(5 + nextIdx).padStart(2, '0')}`;
+        defaultCap = defaultCap || 500;
+      } else if (scaleType === '100L') {
+        newId = `B${String(nextIdx).padStart(2, '0')}`;
+        defaultCap = defaultCap || 100;
+      } else if (scaleType === 'Envase') {
+        newId = `envase-m${nextIdx}`;
+      }
+
+      const defaultName = name || (scaleType === 'Envase' ? `Envase - Máquina ${nextIdx}` : scaleType === 'Erlenmeyer' ? `Erlen - Rota ${nextIdx - 1}` : scaleType === 'Balão' ? `Balão - Rota ${nextIdx}` : `${newId} (${defaultCap ? `${defaultCap / 1000}kL` : 'Novo'})`);
+
+      const newAsset: Asset = {
+        id: newId,
+        name: defaultName,
+        scaleType,
+        categoryLabel: scaleType === 'Envase' ? 'Linha de Envase' : scaleType === '3000_5000L' ? 'Tanques 3000L/5000L' : `Escala ${scaleType}`,
+        capacityLiters: defaultCap
+      };
+
+      return [...prev, newAsset];
+    });
+  };
+
+  const handleDeleteAsset = (id: string) => {
+    setCustomAssets(prev => prev.filter(a => a.id !== id));
+  };
+
+  const handleResetAssets = () => {
+    const defaultPool = getAssetsPool(scaleCounts);
+    setCustomAssets(defaultPool);
+    localStorage.removeItem('pcp_custom_assets');
+  };
+
   const [setupTimes, setSetupTimes] = useState<Record<ScaleType, number>>({
     'Erlenmeyer': 0,
     'Balão': 0,
@@ -46,16 +150,6 @@ export default function App() {
   const [planningModeTab, setPlanningModeTab] = useState<'single' | 'mix'>('single');
   const [mixConfig, setMixConfig] = useState<Record<string, { enabled: boolean; volume: number; priority: number }>>({});
   
-  const [capacityParams, setCapacityParams] = useState<CapacityParams>({
-    workingDaysPerMonth: 22,
-    shiftsPerDay: 1,
-    hoursPerShift: 8,
-    maintenanceHoursPerMonth: 0,
-    bioreactorCount: 4,
-    fillingMachineCount: 2,
-    fillingFlowRateLPH: 1000
-  });
-
   const [pendingShiftBypassModalData, setPendingShiftBypassModalData] = useState<{
     outOfShiftBatches: Batch[];
     errors: PlanningErrorLog[];
@@ -85,41 +179,12 @@ export default function App() {
   const [hasRunAnalysis, setHasRunAnalysis] = useState<boolean>(false);
   const [analyseProgress, setAnalyseProgress] = useState<number>(0);
 
-  // RCCP local form & simulator states
-  const [formWorkingDays, setFormWorkingDays] = useState<number>(22);
-  const [formShifts, setFormShifts] = useState<number>(1);
-  const [formHours, setFormHours] = useState<number>(8);
-  const [formMaintenance, setFormMaintenance] = useState<number>(0);
-  const [formBioreactorCount, setFormBioreactorCount] = useState<number>(4);
-  const [formFillingMachineCount, setFormFillingMachineCount] = useState<number>(2);
-  const [formFillingFlowRateLPH, setFormFillingFlowRateLPH] = useState<number>(1000);
-  const [simulatedQuantities, setSimulatedQuantities] = useState<Record<string, number>>({});
+  // OP Naming Strategy States
+  const [opNamingMode, setOpNamingMode] = useState<'auto' | 'prefix' | 'custom_list'>('auto');
+  const [opPrefixInput, setOpPrefixInput] = useState<string>('');
+  const [customOpListInput, setCustomOpListInput] = useState<string>('');
 
-  useEffect(() => {
-    if (capacityParams) {
-      setFormWorkingDays(capacityParams.workingDaysPerMonth !== undefined ? capacityParams.workingDaysPerMonth : 22);
-      setFormShifts(capacityParams.shiftsPerDay !== undefined ? capacityParams.shiftsPerDay : 1);
-      setFormHours(capacityParams.hoursPerShift !== undefined ? capacityParams.hoursPerShift : 8);
-      setFormMaintenance(capacityParams.maintenanceHoursPerMonth !== undefined ? capacityParams.maintenanceHoursPerMonth : 0);
-      setFormBioreactorCount(capacityParams.bioreactorCount !== undefined ? capacityParams.bioreactorCount : 4);
-      setFormFillingMachineCount(capacityParams.fillingMachineCount !== undefined ? capacityParams.fillingMachineCount : 2);
-      setFormFillingFlowRateLPH(capacityParams.fillingFlowRateLPH !== undefined ? capacityParams.fillingFlowRateLPH : 1000);
-    }
-  }, [capacityParams]);
 
-  useEffect(() => {
-    if (recipes.length > 0) {
-      setSimulatedQuantities(prev => {
-        const next = { ...prev };
-        recipes.forEach(r => {
-          if (next[r.id] === undefined) {
-            next[r.id] = 3;
-          }
-        });
-        return next;
-      });
-    }
-  }, [recipes]);
 
   useEffect(() => {
     localStorage.setItem('pcp_show_config_panels', String(showConfigPanels));
@@ -231,13 +296,22 @@ export default function App() {
       const batchesSnapshot = await getDocs(collection(tenantDb, "batches"));
       const batchesList = batchesSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as Batch));
       if (batchesList.length === 0) {
-        const initialBatches = getInitialBatches();
+        const savedLocal = localStorage.getItem('pcp_batches');
+        let initialBatches = getInitialBatches();
+        if (savedLocal) {
+          try {
+            const parsed = JSON.parse(savedLocal);
+            if (Array.isArray(parsed) && parsed.length > 0) initialBatches = parsed;
+          } catch (e) {}
+        }
         for (const b of initialBatches) {
           await setDoc(doc(tenantDb, "batches", b.id), b);
         }
         setBatches(initialBatches);
+        localStorage.setItem('pcp_batches', JSON.stringify(initialBatches));
       } else {
         setBatches(batchesList);
+        localStorage.setItem('pcp_batches', JSON.stringify(batchesList));
       }
 
       // 4. Deviations
@@ -278,23 +352,6 @@ export default function App() {
       }
 
       // 6. Capacity parameters
-      const capacityParamsDoc = await getDoc(doc(tenantDb, "configs", "capacityParams"));
-      if (capacityParamsDoc.exists()) {
-        setCapacityParams(capacityParamsDoc.data() as CapacityParams);
-      } else {
-        const defaultParams: CapacityParams = {
-          workingDaysPerMonth: 22,
-          shiftsPerDay: 1,
-          hoursPerShift: 8,
-          maintenanceHoursPerMonth: 0,
-          bioreactorCount: 4,
-          fillingMachineCount: 2,
-          fillingFlowRateLPH: 1000
-        };
-        await setDoc(doc(tenantDb, "configs", "capacityParams"), defaultParams);
-        setCapacityParams(defaultParams);
-      }
-
       setIsDataLoaded(true);
     } catch (err) {
       console.error("Erro ao carregar dados do tenant do Firestore:", err);
@@ -422,16 +479,7 @@ export default function App() {
     }
   };
 
-  const handleSaveCapacityParams = async (params: CapacityParams) => {
-    setCapacityParams(params);
-    if (databaseId) {
-      try {
-        await setDoc(doc(getTenantDb(), "configs", "capacityParams"), params);
-      } catch (err) {
-        console.error("Erro ao salvar capacityParams no Firestore:", err);
-      }
-    }
-  };
+
 
   const handleAddBatch = async (newBatch: Batch) => {
     setBatches(prev => [newBatch, ...prev]);
@@ -590,6 +638,12 @@ export default function App() {
       adjustedStart = `${inoculationDate.getFullYear()}-${pad(inoculationDate.getMonth() + 1)}-${pad(inoculationDate.getDate())}T${pad(inoculationDate.getHours())}:${pad(inoculationDate.getMinutes())}`;
     }
 
+    let customOps: string[] | undefined = undefined;
+    if (opNamingMode === 'custom_list' && customOpListInput.trim()) {
+      customOps = customOpListInput.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+    }
+    const prefix = opNamingMode === 'prefix' ? opPrefixInput : undefined;
+
     const result = generateAutomaticPlanning(
       recipe,
       targetVolume,
@@ -598,7 +652,9 @@ export default function App() {
       preventatives,
       shiftConfig,
       setupTimes,
-      envaseLinesCount
+      envaseLinesCount,
+      customOps,
+      prefix
     );
 
     let inShiftToSave = result.scheduledBatches;
@@ -656,6 +712,9 @@ export default function App() {
     } else {
       setPlanningErrors([]);
     }
+
+    const targetMonthIdx = new Date(plannerStart).getMonth();
+    localStorage.setItem('pcp_gantt_active_month', String(targetMonthIdx));
   };
 
   const handleAutoPlanMix = async (e: React.FormEvent) => {
@@ -699,9 +758,38 @@ export default function App() {
 
     let currentCampaignStart = adjustedStart;
 
+    let customOpsList: string[] = [];
+    if (opNamingMode === 'custom_list' && customOpListInput.trim()) {
+      customOpsList = customOpListInput.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+    }
+    const globalPrefix = opNamingMode === 'prefix' ? opPrefixInput : undefined;
+
+    let globalBatchOffset = 0;
+
     sortedItems.forEach((mixItem) => {
       const recipe = recipes.find(r => r.id === mixItem.productId);
       if (!recipe) return;
+
+      const batchesNeededForThisProduct = Math.ceil(mixItem.volume / recipe.yieldPerBatch);
+
+      let productCustomOps: string[] | undefined = undefined;
+      if (opNamingMode === 'custom_list' && customOpsList.length > 0) {
+        productCustomOps = customOpsList.slice(globalBatchOffset, globalBatchOffset + batchesNeededForThisProduct);
+      }
+
+      let productPrefix: string | undefined = undefined;
+      if (opNamingMode === 'prefix' && globalPrefix && globalPrefix.trim()) {
+        const cleanPrefix = globalPrefix.trim();
+        const matchNumber = cleanPrefix.match(/^(.*?)(\d+)$/);
+        if (matchNumber) {
+          const prefixText = matchNumber[1];
+          const startNum = parseInt(matchNumber[2], 10) + globalBatchOffset;
+          const padLen = matchNumber[2].length;
+          productPrefix = `${prefixText}${String(startNum).padStart(padLen, '0')}`;
+        } else {
+          productPrefix = `${cleanPrefix}-${globalBatchOffset + 1}`;
+        }
+      }
 
       const result = generateAutomaticPlanning(
         recipe,
@@ -711,8 +799,13 @@ export default function App() {
         preventatives,
         shiftConfig,
         setupTimes,
-        envaseLinesCount
+        envaseLinesCount,
+        productCustomOps,
+        productPrefix
       );
+
+      const totalScheduledForThisProduct = result.scheduledBatches.length + result.outOfShiftBatches.length;
+      globalBatchOffset += totalScheduledForThisProduct > 0 ? totalScheduledForThisProduct : batchesNeededForThisProduct;
 
       let inShiftToSave = result.scheduledBatches;
       let outOfShiftToSave = result.outOfShiftBatches;
@@ -795,6 +888,9 @@ export default function App() {
     } else {
       setPlanningErrors([]);
     }
+
+    const targetMonthIdx = new Date(plannerStart).getMonth();
+    localStorage.setItem('pcp_gantt_active_month', String(targetMonthIdx));
   };
 
   const handleBypassErrorScheduling = async (err: PlanningErrorLog) => {
@@ -1562,18 +1658,6 @@ export default function App() {
               </span>
             )}
           </button>
-
-          <button
-            onClick={() => setActiveTab('capacity')}
-            className={`flex-1 md:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-              activeTab === 'capacity'
-                ? 'bg-amber-500 text-slate-950 shadow-xs'
-                : 'text-slate-500 hover:text-slate-950 hover:bg-slate-100/70'
-            }`}
-            id="tab-capacity"
-          >
-            <BarChart3 size={15} /> Capacidade RCCP
-          </button>
         </div>
 
         {/* TAB ACTIVE CONTENT RENDER */}
@@ -1868,6 +1952,79 @@ export default function App() {
                         })}
                       </div>
 
+                      {/* GESTÃO E ESTRATÉGIA DE OPs DO CLIENTE / ERP */}
+                      <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] font-black text-slate-700 uppercase tracking-wider block">
+                            Estratégia de Numeração de OPs (ERP)
+                          </label>
+                          <span className="text-[9px] text-indigo-600 font-bold bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">
+                            🧬 Rastreabilidade por Escala
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-1 text-xs">
+                          <button
+                            type="button"
+                            onClick={() => setOpNamingMode('auto')}
+                            className={`py-1.5 px-1 rounded-lg text-[9px] font-bold transition-all cursor-pointer ${
+                              opNamingMode === 'auto'
+                                ? 'bg-slate-900 text-white shadow-2xs'
+                                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            ⚙️ Auto (PRE-L001)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setOpNamingMode('prefix')}
+                            className={`py-1.5 px-1 rounded-lg text-[9px] font-bold transition-all cursor-pointer ${
+                              opNamingMode === 'prefix'
+                                ? 'bg-slate-900 text-white shadow-2xs'
+                                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            🔢 OP Inicial
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setOpNamingMode('custom_list')}
+                            className={`py-1.5 px-1 rounded-lg text-[9px] font-bold transition-all cursor-pointer ${
+                              opNamingMode === 'custom_list'
+                                ? 'bg-slate-900 text-white shadow-2xs'
+                                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            📋 Colar OPs ERP
+                          </button>
+                        </div>
+
+                        {opNamingMode === 'prefix' && (
+                          <div className="pt-1 animate-fadeIn">
+                            <label className="text-[9px] font-bold text-slate-500 uppercase tracking-tight block">Número / Prefixo Inicial da OP</label>
+                            <input
+                              type="text"
+                              value={opPrefixInput}
+                              onChange={(e) => setOpPrefixInput(e.target.value)}
+                              placeholder="Ex: OP-9040 (gerará OP-9040, OP-9041...)"
+                              className="w-full mt-1 px-2.5 py-1 bg-white border border-slate-300 rounded font-mono font-bold text-xs text-slate-800"
+                            />
+                          </div>
+                        )}
+
+                        {opNamingMode === 'custom_list' && (
+                          <div className="pt-1 animate-fadeIn">
+                            <label className="text-[9px] font-bold text-slate-500 uppercase tracking-tight block">Lista de OPs do ERP (uma por linha ou vírgula)</label>
+                            <textarea
+                              value={customOpListInput}
+                              onChange={(e) => setCustomOpListInput(e.target.value)}
+                              placeholder="Colar OPs exatas do cliente:&#10;OP-1024&#10;OP-1029&#10;OP-1055"
+                              className="w-full mt-1 px-2.5 py-1 bg-white border border-slate-300 rounded font-mono text-[11px] text-slate-800 min-h-14"
+                            />
+                          </div>
+                        )}
+                      </div>
+
                       {/* Botões de Ações do Mix */}
                       <div className="flex gap-2 pt-2">
                         <button
@@ -1937,6 +2094,94 @@ export default function App() {
                           />
                         </div>
 
+                        {/* Checkbox de Ajuste de Lead-Time e Restrição ao Mês */}
+                        <div className="col-span-2 sm:col-span-1 flex items-center gap-2 bg-indigo-50/40 p-2.5 rounded-xl border border-indigo-100/60">
+                          <input
+                            type="checkbox"
+                            id="use-lead-time-single"
+                            checked={useLeadTimePlanning}
+                            onChange={(e) => setUseLeadTimePlanning(e.target.checked)}
+                            className="w-3.5 h-3.5 rounded text-indigo-650 focus:ring-indigo-500 cursor-pointer"
+                          />
+                          <label htmlFor="use-lead-time-single" className="text-[10px] font-black text-slate-750 cursor-pointer select-none">
+                            Ajustar início pelo Lead-Time (antecipa Erlen para envasar na data escolhida e restringe ao mês útil)
+                          </label>
+                        </div>
+                      </div>
+
+                      {/* GESTÃO E ESTRATÉGIA DE OPs DO CLIENTE / ERP */}
+                      <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] font-black text-slate-700 uppercase tracking-wider block">
+                            Estratégia de Numeração de OPs (ERP)
+                          </label>
+                          <span className="text-[9px] text-indigo-600 font-bold bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">
+                            🧬 Rastreabilidade por Escala
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-1 text-xs">
+                          <button
+                            type="button"
+                            onClick={() => setOpNamingMode('auto')}
+                            className={`py-1.5 px-1 rounded-lg text-[9px] font-bold transition-all cursor-pointer ${
+                              opNamingMode === 'auto'
+                                ? 'bg-slate-900 text-white shadow-2xs'
+                                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            ⚙️ Auto (PRE-L001)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setOpNamingMode('prefix')}
+                            className={`py-1.5 px-1 rounded-lg text-[9px] font-bold transition-all cursor-pointer ${
+                              opNamingMode === 'prefix'
+                                ? 'bg-slate-900 text-white shadow-2xs'
+                                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            🔢 OP Inicial
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setOpNamingMode('custom_list')}
+                            className={`py-1.5 px-1 rounded-lg text-[9px] font-bold transition-all cursor-pointer ${
+                              opNamingMode === 'custom_list'
+                                ? 'bg-slate-900 text-white shadow-2xs'
+                                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            📋 Colar OPs ERP
+                          </button>
+                        </div>
+
+                        {opNamingMode === 'prefix' && (
+                          <div className="pt-1 animate-fadeIn">
+                            <label className="text-[9px] font-bold text-slate-500 uppercase tracking-tight block">Número / Prefixo Inicial da OP</label>
+                            <input
+                              type="text"
+                              value={opPrefixInput}
+                              onChange={(e) => setOpPrefixInput(e.target.value)}
+                              placeholder="Ex: OP-9040 (gerará OP-9040, OP-9041...)"
+                              className="w-full mt-1 px-2.5 py-1 bg-white border border-slate-300 rounded font-mono font-bold text-xs text-slate-800"
+                            />
+                          </div>
+                        )}
+
+                        {opNamingMode === 'custom_list' && (
+                          <div className="pt-1 animate-fadeIn">
+                            <label className="text-[9px] font-bold text-slate-500 uppercase tracking-tight block">Lista de OPs do ERP (uma por linha ou vírgula)</label>
+                            <textarea
+                              value={customOpListInput}
+                              onChange={(e) => setCustomOpListInput(e.target.value)}
+                              placeholder="Colar OPs exatas do cliente:&#10;OP-1024&#10;OP-1029&#10;OP-1055"
+                              className="w-full mt-1 px-2.5 py-1 bg-white border border-slate-300 rounded font-mono text-[11px] text-slate-800 min-h-14"
+                            />
+                          </div>
+                        )}
+                      </div>
+
                         {/* Botões de Ações */}
                         <div className="flex items-end gap-2 col-span-2 sm:col-span-1">
                           <button
@@ -1955,21 +2200,6 @@ export default function App() {
                             <Trash2 size={14} />
                           </button>
                         </div>
-
-                        {/* Checkbox de Ajuste de Lead-Time e Restrição ao Mês */}
-                        <div className="col-span-2 flex items-center gap-2 bg-indigo-50/40 p-2.5 rounded-xl border border-indigo-100/60">
-                          <input
-                            type="checkbox"
-                            id="use-lead-time-single"
-                            checked={useLeadTimePlanning}
-                            onChange={(e) => setUseLeadTimePlanning(e.target.checked)}
-                            className="w-3.5 h-3.5 rounded text-indigo-650 focus:ring-indigo-500 cursor-pointer"
-                          />
-                          <label htmlFor="use-lead-time-single" className="text-[10px] font-black text-slate-750 cursor-pointer select-none">
-                            Ajustar início pelo Lead-Time (antecipa Erlen para envasar na data escolhida e restringe ao mês útil)
-                          </label>
-                        </div>
-                      </div>
                     </form>
                   )}
                 </div>
@@ -1983,22 +2213,101 @@ export default function App() {
                     </div>
 
                     <div className="space-y-4 mt-4">
-                      {/* Active Envaser Machines Pool count */}
-                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Estações de Envase Ativas (Recorrente)</label>
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="number"
-                            min="1"
-                            max="10"
-                            value={envaseLinesCount}
-                            onChange={(e) => {
-                              const val = Math.max(1, Math.min(10, parseInt(e.target.value) || 1));
-                              setEnvaseLinesCount(val);
-                            }}
-                            className="w-20 px-2 text-center py-1 bg-slate-50 border border-slate-205 rounded-lg text-xs font-mono font-bold text-slate-800 focus:outline-none"
-                          />
-                          <span className="text-[11px] font-medium text-slate-500 leading-normal">linhas de envase paralelas disponíveis para Quality.</span>
+                      {/* Equipment count configuration per Scale */}
+                      <div className="space-y-2 pb-3 border-b border-slate-150">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                          Capacidade de Equipamentos / Rotas por Escala (Linhas no Gantt)
+                        </label>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[9px] font-bold text-slate-500 uppercase">Rotas Erlenmeyer</span>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min="1"
+                                max="30"
+                                value={scaleCounts.erlenmeyerCount}
+                                onChange={(e) => handleUpdateScaleCount('erlenmeyerCount', (parseInt(e.target.value) || 1) - scaleCounts.erlenmeyerCount)}
+                                className="w-16 px-2 py-1 text-center bg-slate-50 border border-slate-205 rounded text-xs font-mono font-bold"
+                              />
+                              <span className="text-[10px] text-slate-400">rotas</span>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[9px] font-bold text-slate-500 uppercase">Rotas Balão</span>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min="1"
+                                max="30"
+                                value={scaleCounts.balaoCount}
+                                onChange={(e) => handleUpdateScaleCount('balaoCount', (parseInt(e.target.value) || 1) - scaleCounts.balaoCount)}
+                                className="w-16 px-2 py-1 text-center bg-slate-50 border border-slate-205 rounded text-xs font-mono font-bold"
+                              />
+                              <span className="text-[10px] text-slate-400">rotas</span>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[9px] font-bold text-slate-500 uppercase">Biorreatores 100L</span>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min="1"
+                                max="30"
+                                value={scaleCounts.b100LCount}
+                                onChange={(e) => handleUpdateScaleCount('b100LCount', (parseInt(e.target.value) || 1) - scaleCounts.b100LCount)}
+                                className="w-16 px-2 py-1 text-center bg-slate-50 border border-slate-205 rounded text-xs font-mono font-bold"
+                              />
+                              <span className="text-[10px] text-slate-400">vasos</span>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[9px] font-bold text-slate-500 uppercase">Biorreatores 500L</span>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min="1"
+                                max="30"
+                                value={scaleCounts.b500LCount}
+                                onChange={(e) => handleUpdateScaleCount('b500LCount', (parseInt(e.target.value) || 1) - scaleCounts.b500LCount)}
+                                className="w-16 px-2 py-1 text-center bg-slate-50 border border-slate-205 rounded text-xs font-mono font-bold"
+                              />
+                              <span className="text-[10px] text-slate-400">vasos</span>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[9px] font-bold text-slate-500 uppercase">Biorreatores 5kL</span>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min="1"
+                                max="30"
+                                value={scaleCounts.b5kLCount}
+                                onChange={(e) => handleUpdateScaleCount('b5kLCount', (parseInt(e.target.value) || 1) - scaleCounts.b5kLCount)}
+                                className="w-16 px-2 py-1 text-center bg-slate-50 border border-slate-205 rounded text-xs font-mono font-bold"
+                              />
+                              <span className="text-[10px] text-slate-400">vasos</span>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col gap-1">
+                            <span className="text-[9px] font-bold text-slate-500 uppercase">Linhas de Envase</span>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min="1"
+                                max="30"
+                                value={scaleCounts.envaseCount}
+                                onChange={(e) => handleUpdateScaleCount('envaseCount', (parseInt(e.target.value) || 1) - scaleCounts.envaseCount)}
+                                className="w-16 px-2 py-1 text-center bg-slate-50 border border-slate-205 rounded text-xs font-mono font-bold"
+                              />
+                              <span className="text-[10px] text-slate-400">máquinas</span>
+                            </div>
+                          </div>
                         </div>
                       </div>
 
@@ -2039,6 +2348,16 @@ export default function App() {
                     </p>
                   </div>
                 </div>
+
+                {/* INDUSTRIAL ASSETS & NOMENCLATURE MANAGER FOR MULTI-CLIENT PLANTS */}
+                <IndustrialAssetsManager
+                  assets={customAssets}
+                  scaleCounts={scaleCounts}
+                  onUpdateAsset={handleUpdateAsset}
+                  onAddAsset={handleAddAsset}
+                  onDeleteAsset={handleDeleteAsset}
+                  onResetAssets={handleResetAssets}
+                />
 
               </div>
               )}
@@ -2097,6 +2416,9 @@ export default function App() {
                   onAddDeviationLog={handleAddDeviationLog}
                   setupTimes={setupTimes}
                   envaseLinesCount={envaseLinesCount}
+                  scaleCounts={scaleCounts}
+                  onUpdateScaleCount={handleUpdateScaleCount}
+                  customAssets={customAssets}
                   deviations={deviations}
                   planningErrors={planningErrors}
                   onDeleteCampaignBatches={handleDeleteCampaignBatches}
@@ -2123,6 +2445,7 @@ export default function App() {
               recipes={recipes}
               onSaveRecipe={handleSaveRecipe}
               onDeleteRecipe={handleDeleteRecipe}
+              customAssets={customAssets}
             />
           )}
 
@@ -2262,14 +2585,12 @@ export default function App() {
                               Lote de Produção: <strong className="text-slate-800">{dev.lotNumber}</strong> • Produto: <span className="font-bold">{dev.productName}</span>
                             </p>
 
-                            <div className="bg-slate-50/70 p-3 rounded-lg border border-slate-150 leading-relaxed text-slate-600 max-w-4xl text-[11px]">
+                          <div className="bg-slate-50/70 p-3 rounded-lg border border-slate-150 leading-relaxed text-slate-600 max-w-4xl text-[11px]">
                               {dev.notes}
                             </div>
                           </div>
 
                           <div className="shrink-0 flex md:flex-col items-end gap-1.5 text-right font-mono text-[9px] text-slate-400">
-                            <span>ID: {dev.id}</span>
-                            <span>Registro Automático</span>
                           </div>
                         </div>
                       );
@@ -2279,445 +2600,6 @@ export default function App() {
               </div>
             </div>
           )}
-
-          {activeTab === 'capacity' && (() => {
-            const workingDays = capacityParams.workingDaysPerMonth !== undefined ? capacityParams.workingDaysPerMonth : 22;
-            const shifts = capacityParams.shiftsPerDay !== undefined ? capacityParams.shiftsPerDay : 1;
-            const hrsPerShift = capacityParams.hoursPerShift !== undefined ? capacityParams.hoursPerShift : 8;
-            const maintHrs = capacityParams.maintenanceHoursPerMonth !== undefined ? capacityParams.maintenanceHoursPerMonth : 0;
-            const bioreactorCount = capacityParams.bioreactorCount !== undefined ? capacityParams.bioreactorCount : 4;
-            const fillingMachineCount = capacityParams.fillingMachineCount !== undefined ? capacityParams.fillingMachineCount : 2;
-            const fillingFlowRateLPH = capacityParams.fillingFlowRateLPH !== undefined ? capacityParams.fillingFlowRateLPH : 1000;
-
-            const totalAvailableHours = (workingDays * shifts * hrsPerShift) - maintHrs;
-            const totalAvailableBioreactorHours = totalAvailableHours * bioreactorCount;
-            const totalAvailableFillingHours = totalAvailableHours * fillingMachineCount;
-
-            let totalRequiredBioreactorHours = 0;
-            let totalRequiredFillingHours = 0;
-            let totalRequiredVolume = 0;
-
-            const isParamsFallback = capacityParams.workingDaysPerMonth === 22 && capacityParams.shiftsPerDay === 1 && capacityParams.hoursPerShift === 8 && capacityParams.maintenanceHoursPerMonth === 0;
-            const isRecipesFallback = recipes.some(r => r.fermentationTimeHours === undefined || r.cipSipTimeHours === undefined || r.batchVolume === undefined);
-            const showFallbackWarning = isParamsFallback || isRecipesFallback;
-
-            const recipeDataList = recipes.map(r => {
-              const qty = simulatedQuantities[r.id] !== undefined ? simulatedQuantities[r.id] : 3;
-              const ferm = r.fermentationTimeHours !== undefined ? r.fermentationTimeHours : 72;
-              const cip = r.cipSipTimeHours !== undefined ? r.cipSipTimeHours : 0;
-              const batchVolume = r.batchVolume !== undefined ? r.batchVolume : (r.yieldPerBatch || 5000);
-
-              // Tempo de Envase do Lote = Volume_Lote / (Vazão * Nº de Máquinas)
-              const flowRateTotal = fillingFlowRateLPH * fillingMachineCount;
-              const envaseTime = flowRateTotal > 0 ? (batchVolume / flowRateTotal) : 0;
-
-              // Tempo de Ciclo Completo do Tanque = Fermentação + CIP/SIP + Tempo de Envase
-              const cycleTime = ferm + cip + envaseTime;
-
-              const requiredBioreactorHours = qty * cycleTime;
-              const requiredFillingHours = qty * envaseTime;
-
-              totalRequiredBioreactorHours += requiredBioreactorHours;
-              totalRequiredFillingHours += requiredFillingHours;
-              totalRequiredVolume += qty * batchVolume;
-
-              // Capacidade nominal dedicação 100% do tempo no mês
-              const capMaxFerm = cycleTime > 0 ? ((totalAvailableBioreactorHours / cycleTime) * batchVolume) : 0;
-              const capMaxFilling = totalAvailableFillingHours * fillingFlowRateLPH;
-              const effectiveCapacity = Math.min(capMaxFerm, capMaxFilling);
-
-              return {
-                recipe: r,
-                qty,
-                ferm,
-                cip,
-                batchVolume,
-                envaseTime,
-                cycleTime,
-                requiredBioreactorHours,
-                requiredFillingHours,
-                effectiveCapacity
-              };
-            });
-
-            const bioreactorOccupancy = totalAvailableBioreactorHours > 0 ? (totalRequiredBioreactorHours / totalAvailableBioreactorHours) * 100 : 0;
-            const fillingOccupancy = totalAvailableFillingHours > 0 ? (totalRequiredFillingHours / totalAvailableFillingHours) * 100 : 0;
-
-            // Determinar Gargalo Real da Planta
-            let bottleneckText = '';
-            let bottleneckColor = '';
-            let bottleneckTitle = '';
-            let bottleneckType: 'none' | 'bioreactor' | 'filling' = 'none';
-
-            if (totalRequiredBioreactorHours > 0 || totalRequiredFillingHours > 0) {
-              if (bioreactorOccupancy >= fillingOccupancy) {
-                bottleneckTitle = 'Gargalo na Fermentação: Falta de volume útil em biorreatores.';
-                bottleneckText = 'A taxa de ocupação dos reatores é o principal limitante físico da planta. Aumentar a quantidade ou o tamanho dos tanques elevará a capacidade da fábrica.';
-                bottleneckColor = 'border-amber-200 bg-amber-50 text-amber-800';
-                bottleneckType = 'bioreactor';
-              } else {
-                bottleneckTitle = 'Gargalo no Envase: A vazão das envasadoras está represando o esgotamento dos biorreatores.';
-                bottleneckText = 'A envasadora não dá vazão suficiente para descarregar o reator rapidamente. O tanque fica retido aguardando o envase, esticando o tempo de ciclo total.';
-                bottleneckColor = 'border-rose-200 bg-rose-50 text-rose-800';
-                bottleneckType = 'filling';
-              }
-            } else {
-              bottleneckTitle = 'Planta Disponível / Sem Produção Simulada';
-              bottleneckText = 'Nenhum lote foi adicionado ao mix simulado para este mês.';
-              bottleneckColor = 'border-emerald-250 bg-emerald-50/50 text-emerald-800';
-              bottleneckType = 'none';
-            }
-
-            const getProgressColor = (rate: number) => {
-              if (rate < 85) return 'bg-emerald-500';
-              if (rate <= 100) return 'bg-amber-500';
-              return 'bg-rose-500';
-            };
-
-            const getTextColor = (rate: number) => {
-              if (rate < 85) return 'text-emerald-600';
-              if (rate <= 100) return 'text-amber-600';
-              return 'text-rose-600';
-            };
-
-            return (
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fadeIn" id="rccp-capacity-tab">
-                {/* LEFT COLUMN: PARAMETERS FORM */}
-                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4 col-span-1 flex flex-col justify-between">
-                  <div>
-                    <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-                      <Clock size={16} className="text-indigo-500" />
-                      <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">Parâmetros da Fábrica</h3>
-                    </div>
-
-                    <form onSubmit={(e) => {
-                      e.preventDefault();
-                      handleSaveCapacityParams({
-                        workingDaysPerMonth: formWorkingDays,
-                        shiftsPerDay: formShifts,
-                        hoursPerShift: formHours,
-                        maintenanceHoursPerMonth: formMaintenance,
-                        bioreactorCount: formBioreactorCount,
-                        fillingMachineCount: formFillingMachineCount,
-                        fillingFlowRateLPH: formFillingFlowRateLPH
-                      });
-                      alert('Parâmetros da fábrica salvos com sucesso!');
-                    }} className="space-y-4 mt-4">
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-1.5">
-                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Dias Úteis no Mês</label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="31"
-                            value={formWorkingDays}
-                            onChange={(e) => setFormWorkingDays(Math.max(1, parseInt(e.target.value) || 1))}
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                            required
-                          />
-                        </div>
-                        <div className="space-y-1.5">
-                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Turnos por Dia</label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="4"
-                            value={formShifts}
-                            onChange={(e) => setFormShifts(Math.max(1, parseInt(e.target.value) || 1))}
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                            required
-                          />
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-1.5">
-                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Horas por Turno</label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="24"
-                            value={formHours}
-                            onChange={(e) => setFormHours(Math.max(1, parseInt(e.target.value) || 1))}
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                            required
-                          />
-                        </div>
-                        <div className="space-y-1.5">
-                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Manut. Preventiva (h)</label>
-                          <input
-                            type="number"
-                            min="0"
-                            value={formMaintenance}
-                            onChange={(e) => setFormMaintenance(Math.max(0, parseInt(e.target.value) || 0))}
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                            required
-                          />
-                        </div>
-                      </div>
-
-                      <div className="border-t border-slate-100 pt-3 space-y-3">
-                        <div className="space-y-1.5">
-                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Biorreatores Última Escala</label>
-                          <input
-                            type="number"
-                            min="1"
-                            value={formBioreactorCount}
-                            onChange={(e) => setFormBioreactorCount(Math.max(1, parseInt(e.target.value) || 1))}
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                            required
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-3">
-                          <div className="space-y-1.5">
-                            <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Nº de Envasadoras</label>
-                            <input
-                              type="number"
-                              min="1"
-                              value={formFillingMachineCount}
-                              onChange={(e) => setFormFillingMachineCount(Math.max(1, parseInt(e.target.value) || 1))}
-                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                              required
-                            />
-                          </div>
-                          <div className="space-y-1.5">
-                            <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Vazão (L/h por Máq)</label>
-                            <input
-                              type="number"
-                              min="1"
-                              value={formFillingFlowRateLPH}
-                              onChange={(e) => setFormFillingFlowRateLPH(Math.max(1, parseInt(e.target.value) || 1))}
-                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:outline-none"
-                              required
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      <button
-                        type="submit"
-                        className="w-full py-2 bg-indigo-650 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg transition-colors shadow-3xs cursor-pointer mt-2"
-                      >
-                        Salvar Parâmetros
-                      </button>
-                    </form>
-                  </div>
-
-                  <div className="pt-4 border-t border-slate-100 mt-4">
-                    <p className="text-[9px] text-slate-400 font-medium leading-normal">
-                      *As taxas de ocupação são modeladas em tempo real sob restrições físicas de Tanques vs. Máquinas de Envase.
-                    </p>
-                  </div>
-                </div>
-
-                {/* RIGHT COLUMN: SIMULATION & MIX */}
-                <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm col-span-2 space-y-6">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                    <div className="flex items-center gap-2">
-                      <Sliders size={16} className="text-indigo-500" />
-                      <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">Simulador de Mix e Ocupação Física</h3>
-                    </div>
-                  </div>
-
-                  {/* Soft fallback warning */}
-                  {showFallbackWarning && (
-                    <div className="p-3.5 bg-amber-50 border border-amber-250 rounded-xl text-[11px] font-medium text-amber-800 leading-normal flex items-start gap-2">
-                      <span className="text-sm">⚠️</span>
-                      <span>
-                        Valores padrão (fallbacks) ativos para dados de bioprocesso ausentes nas receitas ou nos parâmetros da fábrica.
-                      </span>
-                    </div>
-                  )}
-
-                  {/* Bottleneck Warning Banner */}
-                  <div className={`p-4 border rounded-2xl flex items-start gap-3 transition-all ${bottleneckColor}`}>
-                    <span className="text-lg mt-0.5">ℹ️</span>
-                    <div className="space-y-1">
-                      <h4 className="font-extrabold text-xs uppercase tracking-wide">{bottleneckTitle}</h4>
-                      <p className="text-[10px] font-medium leading-normal opacity-90">{bottleneckText}</p>
-                    </div>
-                  </div>
-
-                  {/* Recipes list for simulation */}
-                  <div className="space-y-3.5 max-h-[300px] overflow-y-auto pr-1">
-                    {recipeDataList.map(({ recipe, qty, ferm, cip, batchVolume, envaseTime, cycleTime, requiredBioreactorHours, requiredFillingHours, effectiveCapacity }) => {
-                      const colorObj = COLOR_OPTIONS.find(o => o.value === recipe.color) || COLOR_OPTIONS[0];
-
-                      return (
-                        <div key={recipe.id} className="p-4 bg-slate-50/75 border border-slate-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-slate-50 transition-all">
-                          <div className="space-y-2 flex-1">
-                            <div className="flex items-center gap-2">
-                              <div className={`w-2.5 h-2.5 rounded-full ${colorObj.bg}`} />
-                              <span className="font-extrabold text-xs text-slate-800 uppercase tracking-tight">{recipe.name}</span>
-                              <span className="text-[9px] font-black uppercase bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full">
-                                Lote: {batchVolume.toLocaleString('pt-BR')} L
-                              </span>
-                            </div>
-                            <div className="text-[10px] text-slate-550 font-medium leading-relaxed grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1">
-                              <div>
-                                🧪 <span className="font-bold text-slate-700">Ciclo Biorreator:</span> {ferm}h (Fermentação) + {cip}h (CIP/SIP) = <span className="font-bold font-mono">{ferm + cip}h</span>
-                              </div>
-                              <div>
-                                📦 <span className="font-bold text-slate-700">Tempo Envase Lote:</span> <span className="font-mono font-bold">{envaseTime.toFixed(1)}h</span>
-                              </div>
-                              <div className="md:col-span-2 font-bold text-slate-750">
-                                🔄 Ciclo Total do Tanque (Ocupação): <span className="font-mono text-indigo-750 font-black">{cycleTime.toFixed(1)}h/lote</span>
-                              </div>
-                              <div className="text-slate-450">
-                                Horas do Mix: Biorreator <span className="font-mono text-slate-700 font-bold">{requiredBioreactorHours.toFixed(1)}h</span> | Envase <span className="font-mono text-slate-700 font-bold">{requiredFillingHours.toFixed(1)}h</span>
-                              </div>
-                              <div className="text-emerald-700 font-semibold md:col-span-2">
-                                ⚡ Capacidade Máxima Dedicada: <span className="font-mono font-black">{Math.round(effectiveCapacity).toLocaleString('pt-BR')} L/mês</span>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Quantity controls */}
-                          <div className="flex items-center gap-2 sm:self-center self-end">
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Lotes:</span>
-                            <div className="flex items-center border border-slate-300 rounded-lg overflow-hidden bg-white shadow-3xs">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setSimulatedQuantities(prev => ({
-                                    ...prev,
-                                    [recipe.id]: Math.max(0, qty - 1)
-                                  }));
-                                }}
-                                className="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-650 hover:text-slate-800 text-xs font-bold transition-all cursor-pointer border-r border-slate-200"
-                              >
-                                -
-                              </button>
-                              <input
-                                type="number"
-                                min="0"
-                                value={qty}
-                                onChange={(e) => {
-                                  const val = Math.max(0, parseInt(e.target.value) || 0);
-                                  setSimulatedQuantities(prev => ({
-                                    ...prev,
-                                    [recipe.id]: val
-                                  }));
-                                }}
-                                className="w-10 text-center font-mono font-bold text-xs bg-transparent border-0 focus:outline-none focus:ring-0 text-slate-750"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setSimulatedQuantities(prev => ({
-                                    ...prev,
-                                    [recipe.id]: qty + 1
-                                  }));
-                                }}
-                                className="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-650 hover:text-slate-800 text-xs font-bold transition-all cursor-pointer border-l border-slate-200"
-                              >
-                                +
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Calculations summary & Progress indicators */}
-                  <div className="bg-slate-50 border border-slate-200 rounded-3xl p-6 space-y-6">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-b border-slate-200/60 pb-5">
-                      <div className="space-y-1">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Disponibilidade Mensal</span>
-                        <span className="text-base font-black text-slate-750 font-mono">
-                          {totalAvailableHours.toLocaleString('pt-BR')} <span className="text-xs font-bold text-slate-400">h úteis</span>
-                        </span>
-                        <span className="text-[9px] font-medium text-slate-400 block leading-tight">
-                          ({workingDays}d × {shifts}t × {hrsPerShift}h) - {maintHrs}h manut.
-                        </span>
-                      </div>
-
-                      <div className="space-y-1">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Volume Total do Mix</span>
-                        <span className="text-base font-black text-indigo-700 font-mono">
-                          {totalRequiredVolume.toLocaleString('pt-BR')} <span className="text-xs font-bold text-indigo-500">Litros</span>
-                        </span>
-                        <span className="text-[9px] font-medium text-indigo-500 block leading-tight">
-                          Lotes simulados × volumes dos tanques
-                        </span>
-                      </div>
-
-                      <div className="space-y-1 md:text-right">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Gargalo Ativo</span>
-                        <span className={`text-xs font-black uppercase tracking-wider px-2 py-1 rounded-md inline-block ${
-                          bottleneckType === 'bioreactor' ? 'bg-amber-100 text-amber-800' :
-                          bottleneckType === 'filling' ? 'bg-rose-100 text-rose-800' : 'bg-emerald-100 text-emerald-800'
-                        }`}>
-                          {bottleneckType === 'bioreactor' ? 'Biorreatores' :
-                           bottleneckType === 'filling' ? 'Envase' : 'Livre'}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Progress Bars for both Stages */}
-                    <div className="space-y-4">
-                      {/* 1. Fermentation Occupancy */}
-                      <div className="space-y-1.5">
-                        <div className="flex justify-between items-center text-xs font-bold">
-                          <span className="text-slate-550 uppercase tracking-wider text-[9px] flex items-center gap-1.5">
-                            🧪 Ocupação dos Biorreatores (Fermentação):
-                            <span className="text-slate-400 font-mono font-medium">({totalRequiredBioreactorHours.toFixed(1)}h / {totalAvailableBioreactorHours.toFixed(1)}h)</span>
-                          </span>
-                          <span className={`text-xs font-black font-mono ${getTextColor(bioreactorOccupancy)}`}>
-                            {bioreactorOccupancy.toFixed(1)}%
-                          </span>
-                        </div>
-
-                        <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden p-0.5">
-                          <div
-                            className={`h-full rounded-full transition-all duration-500 ${getProgressColor(bioreactorOccupancy)}`}
-                            style={{ width: `${Math.min(100, bioreactorOccupancy)}%` }}
-                          ></div>
-                        </div>
-                      </div>
-
-                      {/* 2. Filling Occupancy */}
-                      <div className="space-y-1.5">
-                        <div className="flex justify-between items-center text-xs font-bold">
-                          <span className="text-slate-550 uppercase tracking-wider text-[9px] flex items-center gap-1.5">
-                            📦 Ocupação das Máquinas de Envase:
-                            <span className="text-slate-400 font-mono font-medium">({totalRequiredFillingHours.toFixed(1)}h / {totalAvailableFillingHours.toFixed(1)}h)</span>
-                          </span>
-                          <span className={`text-xs font-black font-mono ${getTextColor(fillingOccupancy)}`}>
-                            {fillingOccupancy.toFixed(1)}%
-                          </span>
-                        </div>
-
-                        <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden p-0.5">
-                          <div
-                            className={`h-full rounded-full transition-all duration-500 ${getProgressColor(fillingOccupancy)}`}
-                            style={{ width: `${Math.min(100, fillingOccupancy)}%` }}
-                          ></div>
-                        </div>
-                      </div>
-
-                      {/* Legend */}
-                      <div className="flex justify-between items-center pt-2 text-[8px] font-extrabold tracking-wider uppercase text-slate-400 border-t border-slate-200/50">
-                        <div className="flex items-center gap-1">
-                          <div className="w-2 h-2 rounded bg-emerald-500" />
-                          <span className="text-emerald-600">Livre (&lt; 85%)</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <div className="w-2 h-2 rounded bg-amber-500" />
-                          <span className="text-amber-600">Alerta (85% a 100%)</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <div className="w-2 h-2 rounded bg-rose-500" />
-                          <span className="text-rose-600">Sobrecarga (&gt; 100%)</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
         </div>
       </main>
 
