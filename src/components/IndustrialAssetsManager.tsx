@@ -5,7 +5,7 @@
 
 import React, { useState } from 'react';
 import { Asset, ScaleType, FactoryScaleCounts } from '../types';
-import { Edit3, Plus, Trash2, RotateCcw, Check, Sliders, Database, Layers, ShieldCheck } from 'lucide-react';
+import { Edit3, Plus, Trash2, RotateCcw, Check, Sliders, Database, Layers, ShieldCheck, ChevronUp, ChevronDown } from 'lucide-react';
 
 interface IndustrialAssetsManagerProps {
   assets: Asset[];
@@ -27,7 +27,7 @@ const SCALE_LABELS: Record<ScaleType, string> = {
 
 const SCALE_TYPES: ScaleType[] = ['Erlenmeyer', 'Balão', '100L', '500L', '3000_5000L', 'Envase'];
 
-export default function IndustrialAssetsManager({
+function IndustrialAssetsManager({
   assets,
   scaleCounts,
   onUpdateAsset,
@@ -39,6 +39,7 @@ export default function IndustrialAssetsManager({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editCapacity, setEditCapacity] = useState<number | undefined>(undefined);
+  const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
 
   // New asset form
   const [newName, setNewName] = useState('');
@@ -67,151 +68,177 @@ export default function IndustrialAssetsManager({
   };
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden" id="assets-manager-root">
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden lg:col-span-3 transition-all" id="assets-manager-root">
       {/* Header */}
-      <div className="p-5 border-b border-slate-100 bg-slate-50/60 flex flex-wrap items-center justify-between gap-4">
+      <div className="p-4 sm:p-5 border-b border-slate-100 bg-slate-50/60 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-slate-900 text-white rounded-xl shadow-xs">
+          <div className="p-2.5 bg-slate-900 text-white rounded-xl shadow-xs shrink-0">
             <Sliders size={18} />
           </div>
           <div>
-            <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wider">
-              Mapeamento de Equipamentos & Nomenclatura da Planta (Multi-Cliente)
-            </h3>
-            <p className="text-xs text-slate-500 font-medium">
+            <div className="flex items-center gap-2">
+              <h3 className="font-bold text-slate-800 text-xs sm:text-sm uppercase tracking-wider">
+                Mapeamento de Equipamentos & Nomenclatura da Planta (Multi-Cliente)
+              </h3>
+              <span className="hidden sm:inline-block px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-150 rounded-full text-[10px] font-black uppercase tracking-tight">
+                {assets.length} ativos
+              </span>
+            </div>
+            <p className="text-[11px] sm:text-xs text-slate-500 font-medium mt-0.5">
               Personalize nomes, códigos industriais (TAGs) e capacidades em Litros dos vasos de cada cliente.
             </p>
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            if (confirm('Deseja restaurar a nomenclatura e quantitativo padrão de equipamentos da fábrica?')) {
-              onResetAssets();
-            }
-          }}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-600 bg-white border border-slate-250 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer shadow-3xs"
-          title="Restaurar nomenclatura padrão dos reatores"
-        >
-          <RotateCcw size={13} /> Restaurar Padrão
-        </button>
-      </div>
-
-      {/* Scale Type Tabs */}
-      <div className="px-5 pt-4 border-b border-slate-100 bg-slate-50/20">
-        <div className="flex flex-wrap gap-1">
-          {SCALE_TYPES.map((scale) => {
-            const count = assets.filter(a => a.scaleType === scale).length;
-            const isActive = activeScaleTab === scale;
-            return (
-              <button
-                key={scale}
-                type="button"
-                onClick={() => setActiveScaleTab(scale)}
-                className={`px-3 py-2 text-xs font-bold rounded-t-xl transition-all cursor-pointer flex items-center gap-1.5 border-t border-x ${
-                  isActive
-                    ? 'bg-white text-slate-900 border-slate-200 border-b-white -mb-px font-extrabold shadow-3xs'
-                    : 'bg-slate-100/70 text-slate-500 border-transparent hover:bg-slate-150'
-                }`}
-              >
-                <span>{SCALE_LABELS[scale]}</span>
-                <span className={`px-1.5 py-0.2 rounded text-[10px] font-mono ${
-                  count > 0 ? (isActive ? 'bg-slate-900 text-white' : 'bg-slate-200 text-slate-700') : 'bg-rose-100 text-rose-700 font-extrabold'
-                }`}>
-                  {count}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Tab Content */}
-      <div className="p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
-            Equipamentos Ativos na Escala ({scaleAssets.length} unidade{scaleAssets.length === 1 ? '' : 's'})
-          </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsCollapsed(!isCollapsed)}
+            className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-slate-700 bg-white border border-slate-250 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer shadow-3xs"
+            title={isCollapsed ? "Expandir mapeamento de equipamentos" : "Minimizar mapeamento de equipamentos"}
+          >
+            {isCollapsed ? (
+              <>
+                <ChevronDown size={14} /> Expandir Mapeamento
+              </>
+            ) : (
+              <>
+                <ChevronUp size={14} /> Minimizar
+              </>
+            )}
+          </button>
 
           <button
             type="button"
             onClick={() => {
-              setNewName('');
-              if (activeScaleTab === '3000_5000L') setNewCapacity(5000);
-              else if (activeScaleTab === '500L') setNewCapacity(500);
-              else if (activeScaleTab === '100L') setNewCapacity(100);
-              setShowAddForm(true);
+              if (confirm('Deseja restaurar a nomenclatura e quantitativo padrão de equipamentos da fábrica?')) {
+                onResetAssets();
+              }
             }}
-            className="flex items-center gap-1 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-3xs"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-600 bg-white border border-slate-250 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer shadow-3xs"
+            title="Restaurar nomenclatura padrão dos reatores"
           >
-            <Plus size={14} /> Adicionar Reator / Linha
+            <RotateCcw size={13} /> Restaurar Padrão
           </button>
         </div>
+      </div>
 
-        {/* Create new asset modal inline form */}
-        {showAddForm && (
-          <form onSubmit={handleCreateAsset} className="p-4 bg-indigo-50/70 border border-indigo-200 rounded-xl space-y-3 animate-fadeIn">
-            <div className="flex items-center justify-between border-b border-indigo-200/60 pb-2">
-              <span className="text-xs font-extrabold text-indigo-900 uppercase tracking-tight flex items-center gap-1">
-                <Plus size={14} /> Novo Equipamento / Linha para {SCALE_LABELS[activeScaleTab]}
+      {!isCollapsed && (
+        <>
+          {/* Scale Type Tabs */}
+          <div className="px-4 sm:px-5 pt-3.5 border-b border-slate-100 bg-slate-50/20">
+            <div className="flex flex-wrap gap-1.5">
+              {SCALE_TYPES.map((scale) => {
+                const count = assets.filter(a => a.scaleType === scale).length;
+                const isActive = activeScaleTab === scale;
+                return (
+                  <button
+                    key={scale}
+                    type="button"
+                    onClick={() => setActiveScaleTab(scale)}
+                    className={`px-3 py-2 text-xs font-bold rounded-t-xl transition-all cursor-pointer flex items-center gap-1.5 border-t border-x ${
+                      isActive
+                        ? 'bg-white text-slate-900 border-slate-200 border-b-white -mb-px font-extrabold shadow-3xs'
+                        : 'bg-slate-100/70 text-slate-500 border-transparent hover:bg-slate-150'
+                    }`}
+                  >
+                    <span>{SCALE_LABELS[scale]}</span>
+                    <span className={`px-1.5 py-0.2 rounded text-[10px] font-mono ${
+                      count > 0 ? (isActive ? 'bg-slate-900 text-white' : 'bg-slate-200 text-slate-700') : 'bg-rose-100 text-rose-700 font-extrabold'
+                    }`}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Tab Content */}
+          <div className="p-4 sm:p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Equipamentos Ativos na Escala ({scaleAssets.length} unidade{scaleAssets.length === 1 ? '' : 's'})
               </span>
+
               <button
                 type="button"
-                onClick={() => setShowAddForm(false)}
-                className="text-xs text-indigo-600 font-bold hover:text-indigo-900 cursor-pointer"
+                onClick={() => {
+                  setNewName('');
+                  if (activeScaleTab === '3000_5000L') setNewCapacity(5000);
+                  else if (activeScaleTab === '500L') setNewCapacity(500);
+                  else if (activeScaleTab === '100L') setNewCapacity(100);
+                  setShowAddForm(true);
+                }}
+                className="flex items-center gap-1 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-3xs"
               >
-                Cancelar
+                <Plus size={14} /> Adicionar Reator / Linha
               </button>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-tight block">Nome / Tag Industrial</label>
-                <input
-                  type="text"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder={activeScaleTab === '3000_5000L' ? 'Ex: Reator F-101 ou B17' : 'Ex: Linha Envase 4'}
-                  className="w-full mt-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded font-semibold text-xs text-slate-800"
-                  autoFocus
-                />
-              </div>
-
-              {(activeScaleTab === '3000_5000L' || activeScaleTab === '500L' || activeScaleTab === '100L') && (
-                <div>
-                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-tight block">Capacidade Útil (Litros)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={newCapacity}
-                    onChange={(e) => setNewCapacity(parseInt(e.target.value) || 1000)}
-                    className="w-full mt-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-xs text-slate-800"
-                  />
+            {/* Create new asset modal inline form */}
+            {showAddForm && (
+              <form onSubmit={handleCreateAsset} className="p-4 bg-indigo-50/70 border border-indigo-200 rounded-xl space-y-3 animate-fadeIn">
+                <div className="flex items-center justify-between border-b border-indigo-200/60 pb-2">
+                  <span className="text-xs font-extrabold text-indigo-900 uppercase tracking-tight flex items-center gap-1">
+                    <Plus size={14} /> Novo Equipamento / Linha para {SCALE_LABELS[activeScaleTab]}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddForm(false)}
+                    className="text-xs text-indigo-600 font-bold hover:text-indigo-900 cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
                 </div>
-              )}
-            </div>
 
-            <div className="flex justify-end pt-1">
-              <button
-                type="submit"
-                className="px-4 py-1.5 bg-indigo-650 hover:bg-indigo-750 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
-              >
-                Salvar Novo Equipamento
-              </button>
-            </div>
-          </form>
-        )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-tight block">Nome / Tag Industrial</label>
+                    <input
+                      type="text"
+                      value={newName}
+                      onChange={(e) => setNewName(e.target.value)}
+                      placeholder={activeScaleTab === '3000_5000L' ? 'Ex: Reator F-101 ou B17' : 'Ex: Linha Envase 4'}
+                      className="w-full mt-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded font-semibold text-xs text-slate-800"
+                      autoFocus
+                    />
+                  </div>
 
-        {/* List of assets in active scale */}
-        {scaleAssets.length === 0 ? (
-          <div className="p-8 text-center bg-slate-50 rounded-xl border border-dashed border-slate-250 text-slate-400 space-y-2">
-            <ShieldCheck size={28} className="mx-auto text-slate-300" />
-            <p className="text-xs font-semibold text-slate-600">Nenhum equipamento cadastrado nesta escala.</p>
-            <p className="text-[11px] text-slate-400">Esta escala será desativada do Gantt e das receitas para este cliente.</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {(activeScaleTab === '3000_5000L' || activeScaleTab === '500L' || activeScaleTab === '100L') && (
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-tight block">Capacidade Útil (Litros)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        value={newCapacity}
+                        onChange={(e) => setNewCapacity(parseInt(e.target.value) || 1000)}
+                        className="w-full mt-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-xs text-slate-800"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="submit"
+                    className="px-4 py-1.5 bg-indigo-650 hover:bg-indigo-750 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    Salvar Novo Equipamento
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* List of assets in active scale */}
+            {scaleAssets.length === 0 ? (
+              <div className="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-250 text-slate-400 space-y-1.5">
+                <ShieldCheck size={26} className="mx-auto text-slate-300" />
+                <p className="text-xs font-semibold text-slate-600">Nenhum equipamento cadastrado nesta escala.</p>
+                <p className="text-[11px] text-slate-400">Esta escala será desativada do Gantt e das receitas para este cliente.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
             {scaleAssets.map((asset) => {
               const isEditing = editingId === asset.id;
 
@@ -309,6 +336,10 @@ export default function IndustrialAssetsManager({
           </div>
         )}
       </div>
-    </div>
+    </>
+  )}
+</div>
   );
 }
+
+export default React.memo(IndustrialAssetsManager);

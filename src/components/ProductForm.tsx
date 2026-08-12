@@ -14,19 +14,32 @@ interface ProductFormProps {
   customAssets?: Asset[];
 }
 
-const ALL_SCALE_TYPES_LIST: ScaleType[] = [
-  'Erlenmeyer',
-  'Balão',
-  '100L',
-  '500L',
-  '3000_5000L',
-  'Envase'
+const DEFAULT_SCALE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'Erlenmeyer', label: 'Erlenmeyer' },
+  { value: 'Balão', label: 'Balão' },
+  { value: '100L', label: 'Biorreator 100L' },
+  { value: '500L', label: 'Biorreator 500L' },
+  { value: '3000L', label: 'Tanque 3.000L' },
+  { value: '5000L', label: 'Tanque 5.000L' },
+  { value: 'Envase', label: 'Linha de Envase' }
 ];
 
 export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, customAssets }: ProductFormProps) {
-  const availableScaleTypes = customAssets && customAssets.length > 0 
-    ? ALL_SCALE_TYPES_LIST.filter(s => customAssets.some(a => a.scaleType === s)) 
-    : ALL_SCALE_TYPES_LIST;
+  const [customScales, setCustomScales] = useState<string[]>(() => {
+    const saved = localStorage.getItem('pcp_custom_scales_list');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) {}
+    }
+    return [];
+  });
+
+  const [showAddCustomScaleModal, setShowAddCustomScaleModal] = useState<boolean>(false);
+  const [activeStepIndexForNewScale, setActiveStepIndexForNewScale] = useState<number | null>(null);
+  const [newScaleInputName, setNewScaleInputName] = useState<string>('');
+
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [color, setColor] = useState('blue');
@@ -34,6 +47,7 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, cus
   const [yield3kL, setYield3kL] = useState<number | undefined>(28800);
   const [yield500L, setYield500L] = useState<number | undefined>(undefined);
   const [yield100L, setYield100L] = useState<number | undefined>(undefined);
+  const [finalStepIndex, setFinalStepIndex] = useState<number | null>(null);
   const [steps, setSteps] = useState<StepDefinition[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -42,6 +56,26 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, cus
   const [cipSipTimeHours, setCipSipTimeHours] = useState<number>(8);
   const [chargeDischargeTimeHours, setChargeDischargeTimeHours] = useState<number>(4);
   const [batchVolume, setBatchVolume] = useState<number>(5000);
+
+  const handleConfirmAddCustomScale = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const nameClean = newScaleInputName.trim();
+    if (!nameClean) return;
+
+    if (!customScales.includes(nameClean)) {
+      const updated = [...customScales, nameClean];
+      setCustomScales(updated);
+      localStorage.setItem('pcp_custom_scales_list', JSON.stringify(updated));
+    }
+
+    if (activeStepIndexForNewScale !== null) {
+      handleStepChange(activeStepIndexForNewScale, { scaleType: nameClean as ScaleType });
+    }
+
+    setShowAddCustomScaleModal(false);
+    setNewScaleInputName('');
+    setActiveStepIndexForNewScale(null);
+  };
 
   // Start creating/editing a recipe
   const handleStartNew = () => {
@@ -52,12 +86,13 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, cus
     setYield3kL(28800);
     setYield500L(undefined);
     setYield100L(undefined);
+    setFinalStepIndex(5);
     setSteps([
       { id: 'step-' + Date.now() + '-1', scaleType: 'Erlenmeyer', durationHours: 24 },
       { id: 'step-' + Date.now() + '-2', scaleType: 'Balão', durationHours: 24 },
       { id: 'step-' + Date.now() + '-3', scaleType: '100L', durationHours: 48 },
       { id: 'step-' + Date.now() + '-4', scaleType: '500L', durationHours: 48 },
-      { id: 'step-' + Date.now() + '-5', scaleType: '3000_5000L', durationHours: 72 },
+      { id: 'step-' + Date.now() + '-5', scaleType: '5000L', durationHours: 72 },
       { id: 'step-' + Date.now() + '-6', scaleType: 'Envase', durationHours: 12 },
     ]);
     setFermentationTimeHours(72);
@@ -75,6 +110,7 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, cus
     setYield3kL(recipe.yield3kL !== undefined ? recipe.yield3kL : Math.round((recipe.yieldPerBatch || 48000) * (3000 / 5000)));
     setYield500L(recipe.yield500L);
     setYield100L(recipe.yield100L);
+    setFinalStepIndex(recipe.finalStepIndex !== undefined ? recipe.finalStepIndex : (recipe.steps.length > 0 ? recipe.steps.length - 1 : 0));
     setSteps([...recipe.steps]);
     setFermentationTimeHours(recipe.fermentationTimeHours || 72);
     setCipSipTimeHours(recipe.cipSipTimeHours || 8);
@@ -149,6 +185,7 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, cus
       yield3kL: yield3kL && yield3kL > 0 ? yield3kL : undefined,
       yield500L: yield500L && yield500L > 0 ? yield500L : undefined,
       yield100L: yield100L && yield100L > 0 ? yield100L : undefined,
+      finalStepIndex: finalStepIndex ?? (steps.length > 0 ? steps.length - 1 : 0),
       steps,
       fermentationTimeHours,
       cipSipTimeHours,
@@ -240,53 +277,45 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, cus
               </div>
             </div>
 
-            {/* Yields per Bioreactor Scale */}
-            <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
-              <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                <span className="text-xs font-extrabold uppercase text-slate-700 tracking-wider">
-                  🧪 Volume de Rendimento Acabado por Lote (L)
-                </span>
+            {/* Volume de Rendimento Dinamico Acabado por Lote */}
+            <div className="p-4 bg-slate-50/80 rounded-xl border border-slate-200 space-y-3 shadow-3xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-200/80 pb-2 gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-extrabold uppercase text-slate-800 tracking-wider flex items-center gap-1.5">
+                    🧪 Volume de Rendimento Acabado por Lote (L)
+                  </span>
+                  {(() => {
+                    const activeFinalIdx = finalStepIndex ?? (steps.length > 0 ? steps.length - 1 : 0);
+                    const finalStepName = steps[activeFinalIdx]?.scaleType || 'Envase';
+                    const displayStepName = finalStepName === '3000_5000L' ? 'Tanque 5.000L' : finalStepName === 'Envase' ? 'Linha de Envase' : finalStepName === '3000L' ? 'Tanque 3.000L' : finalStepName === '5000L' ? 'Tanque 5.000L' : finalStepName;
+                    return (
+                      <span className="text-[10px] font-black text-emerald-800 bg-emerald-100/90 px-2.5 py-0.5 rounded-md border border-emerald-300 flex items-center gap-1 shadow-3xs">
+                        🏁 Etapa Final: {displayStepName}
+                      </span>
+                    );
+                  })()}
+                </div>
                 <span className="text-[10px] text-slate-400 font-medium">
-                  Determina o volume total gerado no Dashboard de acordo com o tanque alocado.
+                  Computado pelo Gantt, Dashboard e Otimizador PCP ao concluir o lote nesta receita.
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-tight block">
-                    Rendimento em Biorreatores 5.000L (B11 a B14)
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      min="1"
-                      value={yieldPerBatch}
-                      onChange={(e) => setYieldPerBatch(Math.max(1, parseInt(e.target.value) || 1))}
-                      className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-sm font-mono font-bold text-slate-800 focus:outline-none focus:border-slate-800"
-                      required
-                    />
-                    <span className="text-xs font-bold text-slate-500 font-mono">L</span>
-                  </div>
-                  <span className="text-[10px] text-slate-400 block">Ex: 48.000 Litros em tanque de 5kL.</span>
+              <div className="pt-1 space-y-1.5">
+                <label className="text-[11px] font-extrabold text-slate-700 uppercase tracking-tight block">
+                  Volume de Rendimento Acabado por Lote (Litros)
+                </label>
+                <div className="flex items-center gap-2 max-w-md">
+                  <input
+                    type="number"
+                    min="1"
+                    value={yieldPerBatch}
+                    onChange={(e) => setYieldPerBatch(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-sm font-mono font-extrabold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-3xs"
+                    required
+                  />
+                  <span className="text-xs font-black text-slate-500 font-mono">Litros / Lote</span>
                 </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-tight block">
-                    Rendimento em Biorreatores 3.000L (B15 e B16)
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      min="1"
-                      value={yield3kL !== undefined ? yield3kL : ''}
-                      onChange={(e) => setYield3kL(e.target.value ? Math.max(1, parseInt(e.target.value)) : undefined)}
-                      placeholder={`Prop. 3/5: ${Math.round(yieldPerBatch * (3000 / 5000)).toLocaleString('pt-BR')} L`}
-                      className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-sm font-mono font-bold text-slate-800 focus:outline-none focus:border-slate-800"
-                    />
-                    <span className="text-xs font-bold text-slate-500 font-mono">L</span>
-                  </div>
-                  <span className="text-[10px] text-slate-400 block">Ex: 28.800 Litros em tanque de 3kL (Deixe vazio para proporcional automático).</span>
-                </div>
+                <span className="text-[10px] text-slate-400 block">Ex: 48.000 Litros de produto acabado produzidos por lote concluído nesta receita.</span>
               </div>
             </div>
 
@@ -316,15 +345,40 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, cus
                       <div className="flex-1 min-w-[140px] space-y-1">
                         <label className="text-[10px] uppercase font-bold text-slate-400 block md:hidden">Escala/Etapa</label>
                         <select
-                          value={step.scaleType}
-                          onChange={(e) => handleStepChange(index, { scaleType: e.target.value as ScaleType })}
-                          className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:outline-none"
+                          value={step.scaleType === '3000_5000L' ? '5000L' : step.scaleType}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val === '__ADD_NEW_CUSTOM_SCALE__') {
+                              setActiveStepIndexForNewScale(index);
+                              setNewScaleInputName('');
+                              setShowAddCustomScaleModal(true);
+                            } else {
+                              handleStepChange(index, { scaleType: val as ScaleType });
+                            }
+                          }}
+                          className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
                         >
-                          {availableScaleTypes.map(type => (
-                            <option key={type} value={type}>
-                              {type === '3000_5000L' ? 'Tanque 3000L/5000L' : type === 'Envase' ? 'Linha Envase / Quality' : type}
-                            </option>
-                          ))}
+                          <optgroup label="Escalas Padronizadas">
+                            {DEFAULT_SCALE_OPTIONS.map(opt => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </optgroup>
+                          
+                          {customScales.length > 0 && (
+                            <optgroup label="Escalas Personalizadas do Cliente">
+                              {customScales.map(cs => (
+                                <option key={cs} value={cs}>
+                                  {cs}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+
+                          <option value="__ADD_NEW_CUSTOM_SCALE__" className="font-extrabold text-indigo-600 bg-indigo-50">
+                            + Outros (Adicionar Nova Escala/Equipamento)...
+                          </option>
                         </select>
                       </div>
 
@@ -345,7 +399,26 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, cus
                       </div>
 
                       {/* Reordenação e Ações */}
-                      <div className="flex items-center justify-end gap-1 ml-auto pt-2 md:pt-0 border-t md:border-t-0 border-slate-150">
+                      <div className="flex items-center justify-end gap-2 ml-auto pt-2 md:pt-0 border-t md:border-t-0 border-slate-150 shrink-0">
+                        {/* Seletor da Etapa Conclusiva / Final */}
+                        {(() => {
+                          const isFinalStep = finalStepIndex === index || (finalStepIndex === null && index === steps.length - 1);
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => setFinalStepIndex(index)}
+                              className={`px-2.5 py-1.5 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer flex items-center gap-1 border shrink-0 ${
+                                isFinalStep
+                                  ? 'bg-emerald-600 border-emerald-600 text-white shadow-2xs'
+                                  : 'bg-white border-slate-250 text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                              }`}
+                              title="Marcar esta etapa como a etapa final que conclui o lote e computa o volume total produzido"
+                            >
+                              🏁 {isFinalStep ? 'Etapa Conclusiva (Volume Final)' : 'Marcar como Final'}
+                            </button>
+                          );
+                        })()}
+
                         {/* Up */}
                         <button
                           type="button"
@@ -370,7 +443,7 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, cus
                         <button
                           type="button"
                           onClick={() => handleRemoveStep(index)}
-                          className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded border border-transparent ml-2 cursor-pointer"
+                          className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded border border-transparent cursor-pointer"
                           title="Apagar Etapa"
                         >
                           <Trash2 size={14} />
@@ -425,24 +498,14 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, cus
                 <div className="p-5 flex-1 flex flex-col">
                   <div className="flex justify-between items-start gap-2 mb-2">
                     <div>
-                      <h4 className="font-semibold text-slate-800 group-hover:text-slate-950 transition-colors">{recipe.name}</h4>
-                      <div className="flex flex-col gap-1 mt-1">
-                        <div className="flex gap-1 bg-slate-50 border border-slate-100 p-1 rounded items-center">
-                          <span className="text-[9px] font-mono text-slate-400 uppercase tracking-wide">ID: {recipe.id}</span>
-                          <span className="text-slate-300">|</span>
-                          <span className="text-[9px] font-bold text-emerald-600">
-                            Rend: {recipe.yieldPerBatch?.toLocaleString('pt-BR') || '3.000'} L
-                          </span>
-                        </div>
-                        <div className="grid grid-cols-2 gap-1 bg-indigo-50/20 border border-indigo-100/30 p-1.5 rounded text-[9px] font-medium text-slate-500 font-mono">
-                          <div>Vol: <span className="font-bold text-slate-700">{recipe.batchVolume || recipe.yieldPerBatch || 0}L</span></div>
-                          <div>Ferm: <span className="font-bold text-slate-700">{recipe.fermentationTimeHours || 0}h</span></div>
-                          <div>CIP: <span className="font-bold text-slate-700">{recipe.cipSipTimeHours || 0}h</span></div>
-                          <div>C/D: <span className="font-bold text-slate-700">{recipe.chargeDischargeTimeHours || 0}h</span></div>
-                        </div>
+                      <h4 className="font-extrabold text-slate-800 group-hover:text-slate-950 transition-colors text-base">{recipe.name}</h4>
+                      <div className="mt-1">
+                        <span className="inline-block text-[10px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-md shadow-3xs">
+                          Rendimento: {recipe.yieldPerBatch?.toLocaleString('pt-BR') || '3.000'} Litros/Lote
+                        </span>
                       </div>
                     </div>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-medium bg-slate-100 text-slate-600">
+                    <span className="px-2.5 py-1 rounded-lg text-xs font-mono font-extrabold bg-slate-100 text-slate-700 border border-slate-200 shadow-3xs">
                       {totalHours}h Totais
                     </span>
                   </div>
@@ -457,7 +520,7 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, cus
                               {i + 1}
                             </span>
                             <span className="font-medium text-slate-700">
-                              {st.scaleType === '3000_5000L' ? 'Tanque 3000/5000L' : st.scaleType === 'Envase' ? 'Envase / Quality' : st.scaleType}
+                              {st.scaleType === '3000_5000L' ? 'Tanque 5.000L' : st.scaleType === 'Envase' ? 'Linha de Envase' : st.scaleType === '3000L' ? 'Tanque 3.000L' : st.scaleType === '5000L' ? 'Tanque 5.000L' : st.scaleType}
                             </span>
                           </div>
                           <span className="font-mono text-slate-500 font-medium">{st.durationHours}h</span>
@@ -486,6 +549,58 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, cus
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* MODAL DE CADASTRO DE ESCALA PERSONALIZADA (+ OUTROS) */}
+      {showAddCustomScaleModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl p-6 w-full max-w-md space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="font-extrabold text-slate-800 text-sm">Adicionar Nova Escala / Equipamento</h3>
+              <button
+                type="button"
+                onClick={() => setShowAddCustomScaleModal(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg text-xs font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmAddCustomScale} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Nome da Nova Escala ou Equipamento</label>
+                <input
+                  type="text"
+                  value={newScaleInputName}
+                  onChange={(e) => setNewScaleInputName(e.target.value)}
+                  placeholder="Ex: Centrífuga, 10.000L, Sacaria, Filtro Tangencial"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  autoFocus
+                  required
+                />
+                <p className="text-[10px] text-slate-400 leading-relaxed">
+                  Este novo item será salvo e entrará automaticamente na lista suspensa para todas as receitas deste cliente.
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddCustomScaleModal(false)}
+                  className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-xs"
+                >
+                  Adicionar à Lista
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

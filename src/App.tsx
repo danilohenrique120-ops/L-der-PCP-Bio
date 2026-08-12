@@ -24,22 +24,7 @@ export default function App() {
 
   // Core application states loaded from Firestore multi-tenant configs
   const [recipes, setRecipes] = useState<ProductRecipe[]>([]);
-  const [batches, setBatches] = useState<Batch[]>(() => {
-    const saved = localStorage.getItem('pcp_batches');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-      } catch (e) {}
-    }
-    return getInitialBatches();
-  });
-
-  useEffect(() => {
-    if (batches.length > 0) {
-      localStorage.setItem('pcp_batches', JSON.stringify(batches));
-    }
-  }, [batches]);
+  const [batches, setBatches] = useState<Batch[]>([]);
   const [preventatives, setPreventatives] = useState<Preventative[]>([]);
   const [deviations, setDeviations] = useState<DeviationLog[]>([]);
   const [scaleCounts, setScaleCounts] = useState<FactoryScaleCounts>(() => {
@@ -283,36 +268,12 @@ export default function App() {
       // 2. Preventatives
       const prevSnapshot = await getDocs(collection(tenantDb, "preventatives"));
       const prevList = prevSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as Preventative));
-      if (prevList.length === 0) {
-        for (const p of INITIAL_PREVENTATIVES) {
-          await setDoc(doc(tenantDb, "preventatives", p.id), p);
-        }
-        setPreventatives(INITIAL_PREVENTATIVES);
-      } else {
-        setPreventatives(prevList);
-      }
+      setPreventatives(prevList);
 
       // 3. Batches
       const batchesSnapshot = await getDocs(collection(tenantDb, "batches"));
       const batchesList = batchesSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as Batch));
-      if (batchesList.length === 0) {
-        const savedLocal = localStorage.getItem('pcp_batches');
-        let initialBatches = getInitialBatches();
-        if (savedLocal) {
-          try {
-            const parsed = JSON.parse(savedLocal);
-            if (Array.isArray(parsed) && parsed.length > 0) initialBatches = parsed;
-          } catch (e) {}
-        }
-        for (const b of initialBatches) {
-          await setDoc(doc(tenantDb, "batches", b.id), b);
-        }
-        setBatches(initialBatches);
-        localStorage.setItem('pcp_batches', JSON.stringify(initialBatches));
-      } else {
-        setBatches(batchesList);
-        localStorage.setItem('pcp_batches', JSON.stringify(batchesList));
-      }
+      setBatches(batchesList);
 
       // 4. Deviations
       const devSnapshot = await getDocs(collection(tenantDb, "deviations"));
@@ -493,7 +454,7 @@ export default function App() {
     }
   };
 
-  const handleDeleteBatch = async (id: string) => {
+  const handleDeleteBatch = React.useCallback(async (id: string) => {
     setBatches(prev => prev.filter(b => b.id !== id));
     if (databaseId) {
       try {
@@ -502,7 +463,7 @@ export default function App() {
         console.error("Erro ao deletar lote no Firestore:", err);
       }
     }
-  };
+  }, [databaseId]);
 
   const handleAddPreventative = async (newPrev: Preventative) => {
     setPreventatives(prev => [...prev, newPrev]);
@@ -515,7 +476,7 @@ export default function App() {
     }
   };
 
-  const handleDeletePreventative = async (id: string) => {
+  const handleDeletePreventative = React.useCallback(async (id: string) => {
     setPreventatives(prev => prev.filter(p => p.id !== id));
     if (databaseId) {
       try {
@@ -524,7 +485,7 @@ export default function App() {
         console.error("Erro ao deletar preventiva no Firestore:", err);
       }
     }
-  };
+  }, [databaseId]);
 
   const handleClearAllBatches = async () => {
     if (confirm('Atenção: Deseja deletar COMPLETAMENTE todos os lotes do cronograma corrente para uma replanificação do zero?')) {
@@ -937,7 +898,7 @@ export default function App() {
     }
   };
 
-  const handleAddDeviationLog = async (log: DeviationLog) => {
+  const handleAddDeviationLog = React.useCallback(async (log: DeviationLog) => {
     setDeviations(prev => [log, ...prev]);
     if (databaseId) {
       try {
@@ -946,9 +907,9 @@ export default function App() {
         console.error("Erro ao salvar desvio no Firestore:", e);
       }
     }
-  };
+  }, [databaseId]);
 
-  const handleUpdateBatches = async (updatedBatches: Batch[]) => {
+  const handleUpdateBatches = React.useCallback(async (updatedBatches: Batch[]) => {
     setBatches(updatedBatches);
     if (databaseId) {
       try {
@@ -960,9 +921,9 @@ export default function App() {
         console.error("Erro ao atualizar lotes no Firestore:", e);
       }
     }
-  };
+  }, [databaseId]);
 
-  const handleDeleteCampaignBatches = async (productId: string | 'all', monthIndex: number | 'all') => {
+  const handleDeleteCampaignBatches = React.useCallback(async (productId: string | 'all', monthIndex: number | 'all') => {
     const batchesToDelete = batches.filter(b => {
       if (productId !== 'all' && b.productId !== productId) return false;
 
@@ -997,7 +958,7 @@ export default function App() {
         console.error("Erro ao excluir lotes do Firestore:", err);
       }
     }
-  };
+  }, [batches, databaseId]);
 
   const performAnalysis = async (restrictValue: boolean) => {
     let items: { recipe: ProductRecipe; targetVolume: number }[] = [];
@@ -1376,43 +1337,46 @@ export default function App() {
   const preventativesCount = preventatives.length;
   const formulasCount = recipes.length;
 
-  // Calculate conflicting batches in active timeline taking setups and envaser counts into account
-  let conflictBatchesCount = 0;
-  batches.forEach(b => {
-    let hasBatchConflict = false;
-    for (const step of b.steps) {
-      const stepSetup = setupTimes[step.scaleType] || 0;
-      const end1Setup = new Date(step.endDateTime).getTime() + stepSetup * 60 * 60 * 1000;
-      const start1 = new Date(step.startDateTime).getTime();
-      const normAssetId = normalizeAssetId(step.assetId, envaseLinesCount);
+  // Calculate conflicting batches in active timeline taking setups and envaser counts into account (memoized to eliminate typing delay)
+  const conflictBatchesCount = React.useMemo(() => {
+    let count = 0;
+    batches.forEach(b => {
+      let hasBatchConflict = false;
+      for (const step of b.steps) {
+        const stepSetup = setupTimes[step.scaleType] || 0;
+        const end1Setup = new Date(step.endDateTime).getTime() + stepSetup * 60 * 60 * 1000;
+        const start1 = new Date(step.startDateTime).getTime();
+        const normAssetId = normalizeAssetId(step.assetId, envaseLinesCount);
 
-      // Look for overlaps on other batches
-      const overlapsWithBatch = batches.some(ob => 
-        ob.id !== b.id && 
-        ob.steps.some(ost => {
-          if (normalizeAssetId(ost.assetId, envaseLinesCount) !== normAssetId) return false;
-          const ostSetup = setupTimes[ost.scaleType] || 0;
-          const ostEndSetup = new Date(ost.endDateTime).getTime() + ostSetup * 60 * 60 * 1000;
-          const ostStart = new Date(ost.startDateTime).getTime();
-          return start1 < ostEndSetup && ostStart < end1Setup;
-        })
-      );
+        // Look for overlaps on other batches
+        const overlapsWithBatch = batches.some(ob => 
+          ob.id !== b.id && 
+          ob.steps.some(ost => {
+            if (normalizeAssetId(ost.assetId, envaseLinesCount) !== normAssetId) return false;
+            const ostSetup = setupTimes[ost.scaleType] || 0;
+            const ostEndSetup = new Date(ost.endDateTime).getTime() + ostSetup * 60 * 60 * 1000;
+            const ostStart = new Date(ost.startDateTime).getTime();
+            return start1 < ostEndSetup && ostStart < end1Setup;
+          })
+        );
 
-      // Look for overlap with preventives
-      const overlapsWithPrev = preventatives.some(p => {
-        if (normalizeAssetId(p.assetId, envaseLinesCount) !== normAssetId) return false;
-        const pStart = new Date(p.startDateTime).getTime();
-        const pEnd = new Date(p.endDateTime).getTime();
-        return start1 < pEnd && pStart < end1Setup;
-      });
+        // Look for overlap with preventives
+        const overlapsWithPrev = preventatives.some(p => {
+          if (normalizeAssetId(p.assetId, envaseLinesCount) !== normAssetId) return false;
+          const pStart = new Date(p.startDateTime).getTime();
+          const pEnd = new Date(p.endDateTime).getTime();
+          return start1 < pEnd && pStart < end1Setup;
+        });
 
-      if (overlapsWithBatch || overlapsWithPrev) {
-        hasBatchConflict = true;
-        break;
+        if (overlapsWithBatch || overlapsWithPrev) {
+          hasBatchConflict = true;
+          break;
+        }
       }
-    }
-    if (hasBatchConflict) conflictBatchesCount++;
-  });
+      if (hasBatchConflict) count++;
+    });
+    return count;
+  }, [batches, preventatives, setupTimes, envaseLinesCount]);
 
   if (!user) {
     return (
@@ -1488,6 +1452,16 @@ export default function App() {
             </p>
           </div>
         </div>
+      </div>
+    );
+  }
+
+  if (loading || !isDataLoaded) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-4 antialiased text-white font-sans" id="loading-root">
+        <div className="w-14 h-14 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin mb-4 shadow-xl"></div>
+        <h2 className="text-sm font-extrabold tracking-widest uppercase text-slate-200">Carregando dados da fábrica...</h2>
+        <p className="text-xs text-slate-400 mt-1 font-medium">Sincronizando cronograma de lotes e desvios operacionais</p>
       </div>
     );
   }
@@ -1710,7 +1684,7 @@ export default function App() {
                       </button>
                     </div>
                     
-                    <div className="space-y-4 mt-4 max-h-[280px] overflow-y-auto pr-1" id="shifts-list-container">
+                    <div className="space-y-4 mt-4 max-h-[450px] overflow-y-auto pr-1" id="shifts-list-container">
                       {shiftConfig.shifts.map((sh) => (
                         <div key={sh.id} className="p-3 bg-slate-50 border border-slate-205 rounded-xl space-y-3 relative">
                           {/* Name and delete */}
@@ -2213,106 +2187,8 @@ export default function App() {
                     </div>
 
                     <div className="space-y-4 mt-4">
-                      {/* Equipment count configuration per Scale */}
-                      <div className="space-y-2 pb-3 border-b border-slate-150">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
-                          Capacidade de Equipamentos / Rotas por Escala (Linhas no Gantt)
-                        </label>
-                        <div className="grid grid-cols-2 gap-2 text-xs">
-                          <div className="flex flex-col gap-1">
-                            <span className="text-[9px] font-bold text-slate-500 uppercase">Rotas Erlenmeyer</span>
-                            <div className="flex items-center gap-1">
-                              <input
-                                type="number"
-                                min="1"
-                                max="30"
-                                value={scaleCounts.erlenmeyerCount}
-                                onChange={(e) => handleUpdateScaleCount('erlenmeyerCount', (parseInt(e.target.value) || 1) - scaleCounts.erlenmeyerCount)}
-                                className="w-16 px-2 py-1 text-center bg-slate-50 border border-slate-205 rounded text-xs font-mono font-bold"
-                              />
-                              <span className="text-[10px] text-slate-400">rotas</span>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col gap-1">
-                            <span className="text-[9px] font-bold text-slate-500 uppercase">Rotas Balão</span>
-                            <div className="flex items-center gap-1">
-                              <input
-                                type="number"
-                                min="1"
-                                max="30"
-                                value={scaleCounts.balaoCount}
-                                onChange={(e) => handleUpdateScaleCount('balaoCount', (parseInt(e.target.value) || 1) - scaleCounts.balaoCount)}
-                                className="w-16 px-2 py-1 text-center bg-slate-50 border border-slate-205 rounded text-xs font-mono font-bold"
-                              />
-                              <span className="text-[10px] text-slate-400">rotas</span>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col gap-1">
-                            <span className="text-[9px] font-bold text-slate-500 uppercase">Biorreatores 100L</span>
-                            <div className="flex items-center gap-1">
-                              <input
-                                type="number"
-                                min="1"
-                                max="30"
-                                value={scaleCounts.b100LCount}
-                                onChange={(e) => handleUpdateScaleCount('b100LCount', (parseInt(e.target.value) || 1) - scaleCounts.b100LCount)}
-                                className="w-16 px-2 py-1 text-center bg-slate-50 border border-slate-205 rounded text-xs font-mono font-bold"
-                              />
-                              <span className="text-[10px] text-slate-400">vasos</span>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col gap-1">
-                            <span className="text-[9px] font-bold text-slate-500 uppercase">Biorreatores 500L</span>
-                            <div className="flex items-center gap-1">
-                              <input
-                                type="number"
-                                min="1"
-                                max="30"
-                                value={scaleCounts.b500LCount}
-                                onChange={(e) => handleUpdateScaleCount('b500LCount', (parseInt(e.target.value) || 1) - scaleCounts.b500LCount)}
-                                className="w-16 px-2 py-1 text-center bg-slate-50 border border-slate-205 rounded text-xs font-mono font-bold"
-                              />
-                              <span className="text-[10px] text-slate-400">vasos</span>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col gap-1">
-                            <span className="text-[9px] font-bold text-slate-500 uppercase">Biorreatores 5kL</span>
-                            <div className="flex items-center gap-1">
-                              <input
-                                type="number"
-                                min="1"
-                                max="30"
-                                value={scaleCounts.b5kLCount}
-                                onChange={(e) => handleUpdateScaleCount('b5kLCount', (parseInt(e.target.value) || 1) - scaleCounts.b5kLCount)}
-                                className="w-16 px-2 py-1 text-center bg-slate-50 border border-slate-205 rounded text-xs font-mono font-bold"
-                              />
-                              <span className="text-[10px] text-slate-400">vasos</span>
-                            </div>
-                          </div>
-
-                          <div className="flex flex-col gap-1">
-                            <span className="text-[9px] font-bold text-slate-500 uppercase">Linhas de Envase</span>
-                            <div className="flex items-center gap-1">
-                              <input
-                                type="number"
-                                min="1"
-                                max="30"
-                                value={scaleCounts.envaseCount}
-                                onChange={(e) => handleUpdateScaleCount('envaseCount', (parseInt(e.target.value) || 1) - scaleCounts.envaseCount)}
-                                className="w-16 px-2 py-1 text-center bg-slate-50 border border-slate-205 rounded text-xs font-mono font-bold"
-                              />
-                              <span className="text-[10px] text-slate-400">máquinas</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
                       {/* Setup/CIP post batch timings per Equipment scale */}
-                      <div className="space-y-2 pt-2 border-t border-slate-100/60">
+                      <div className="space-y-3">
                         <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Tempos de Setup / Preparação (CIP) pôs lote</label>
                         <div className="grid grid-cols-2 gap-3 text-xs">
                           {Object.keys(setupTimes).map((scKey) => {

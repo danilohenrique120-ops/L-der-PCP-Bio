@@ -6,7 +6,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Batch, Preventative, ScaleType, Asset, getAssetsPool, normalizeAssetId, COLOR_OPTIONS, ProductRecipe, DeviationLog, ScheduledStep, PlanningErrorLog, FactoryScaleCounts } from '../types';
 import { formatFullDate, formatShortDate, getWeekNumber, areIntervalsOverlapping, assignStepOpNumbers, getInoculationDateForAnchoredScale, calculateProductionTimeline, getBatchYield } from '../utils/timeline';
-import { ChevronLeft, ChevronRight, Calendar, AlertTriangle, ShieldCheck, Trash2, Sliders, Info, Eye, Edit3, Check, Plus, Sparkles, Clock, X, BarChart3, Lock } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar, AlertTriangle, ShieldCheck, Trash2, Sliders, Info, Eye, Edit3, Check, Plus, Sparkles, Clock, X, BarChart3, Lock, Search } from 'lucide-react';
 
 export function isAssetMatch(targetAssetId: string, rowAssetId: string, envaseCount: number): boolean {
   if (!targetAssetId || !rowAssetId) return false;
@@ -41,7 +41,7 @@ const CATEGORIES = [
   { label: 'Linha de Envase', scaleType: 'Envase', isLine: true }
 ];
 
-export default function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDeletePreventative, onUpdateBatches, onAddDeviationLog, setupTimes, envaseLinesCount, scaleCounts, onUpdateScaleCount, customAssets, deviations = [], planningErrors = [], onDeleteCampaignBatches }: GanttTimelineProps) {
+function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDeletePreventative, onUpdateBatches, onAddDeviationLog, setupTimes, envaseLinesCount, scaleCounts, onUpdateScaleCount, customAssets, deviations = [], planningErrors = [], onDeleteCampaignBatches }: GanttTimelineProps) {
   const [visibleScales, setVisibleScales] = useState<Record<ScaleType, boolean>>(() => {
     const saved = localStorage.getItem('pcp_gantt_visible_scales');
     if (saved) {
@@ -119,14 +119,20 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
     return () => clearInterval(interval);
   }, []);
 
+  const isJumpingToSearchRef = useRef<boolean>(false);
+  const isJumpingToTodayRef = useRef<boolean>(false);
+  const isInitialMountRef = useRef<boolean>(false);
+
+  // Automatically focus on current day/time (AGORA) upon login/initial mount
   useEffect(() => {
-    // Scroll to active month of active year on initial mount or activeYear change
-    setTimeout(() => {
-      const targetMonth = activeMonth !== null ? activeMonth : new Date().getMonth();
-      scrollToDate(new Date(activeYear, targetMonth, 1), 'auto');
-    }, 150);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeYear]);
+    if (!isInitialMountRef.current) {
+      isInitialMountRef.current = true;
+      isJumpingToTodayRef.current = true;
+      const today = new Date();
+      setActiveYear(today.getFullYear());
+      setActiveMonth(today.getMonth());
+    }
+  }, []);
 
   // Month names in Portuguese for filtering
   const MONTHS_PT = [
@@ -198,6 +204,21 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
   } | null>(null);
 
   const [zoomLevel, setZoomLevel] = useState<number>(120); // Width of 1 day in pixels
+
+  // Search state & index for Excel-like batch finder (with debounced fast input buffer)
+  const [searchInput, setSearchInput] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [currentMatchIndex, setCurrentMatchIndex] = useState<number>(0);
+  const [highlightedBatchId, setHighlightedBatchId] = useState<string | null>(null);
+  const [highlightedStepIndex, setHighlightedStepIndex] = useState<number | null>(null);
+
+  // Debounce search input to avoid laggy renders while typing fast
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchQuery(searchInput);
+    }, 180);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   // State variables for Deviation / Interventions
   const [deviationMode, setDeviationMode] = useState<'none' | 'delay' | 'route-swap' | 'contamination'>('none');
@@ -452,29 +473,46 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
   const dayWidth = zoomLevel; 
   const hourWidth = dayWidth / 24;
 
-  const timelineStart = new Date(`${activeYear}-01-01T00:00:00`);
-  const timelineEnd = new Date(`${activeYear}-12-31T23:59:59`);
-  const isLeapYear = (activeYear % 4 === 0 && activeYear % 100 !== 0) || (activeYear % 400 === 0);
-  const totalDays = isLeapYear ? 366 : 365;
-
-  // Calculate list of days in the active viewport range
-  const daysArray: Date[] = [];
-  for (let i = 0; i < totalDays; i++) {
-    const d = new Date(timelineStart);
-    d.setDate(timelineStart.getDate() + i);
-    daysArray.push(d);
-  }
-
-  // Group days by Sunday/Monday week descriptors
-  const weeksMap: Record<string, { weekNum: number; days: Date[] }> = {};
-  daysArray.forEach(day => {
-    const { week, year } = getWeekNumber(day);
-    const key = `W${week}-${year}`;
-    if (!weeksMap[key]) {
-      weeksMap[key] = { weekNum: week, days: [] };
+  // Dynamically scope timeline range: if a month is active, render only that month (~30 days), reducing DOM nodes by 90%!
+  const { timelineStart, timelineEnd, totalDays } = React.useMemo(() => {
+    if (activeMonth !== null) {
+      const start = new Date(activeYear, activeMonth, 1, 0, 0, 0);
+      const end = new Date(activeYear, activeMonth + 1, 0, 23, 59, 59);
+      const daysCount = new Date(activeYear, activeMonth + 1, 0).getDate();
+      return { timelineStart: start, timelineEnd: end, totalDays: daysCount };
+    } else {
+      const start = new Date(`${activeYear}-01-01T00:00:00`);
+      const end = new Date(`${activeYear}-12-31T23:59:59`);
+      const isLeapYear = (activeYear % 4 === 0 && activeYear % 100 !== 0) || (activeYear % 400 === 0);
+      return { timelineStart: start, timelineEnd: end, totalDays: isLeapYear ? 366 : 365 };
     }
-    weeksMap[key].days.push(day);
-  });
+  }, [activeYear, activeMonth]);
+
+  // Memoize days array and weeks map for ultra-fast rendering
+  const { daysArray, weeksMap } = React.useMemo<{
+    daysArray: Date[];
+    weeksMap: Record<string, { weekNum: number; days: Date[] }>;
+  }>(() => {
+    const days: Date[] = [];
+    const tStart = new Date(timelineStart);
+    for (let i = 0; i < totalDays; i++) {
+      const d = new Date(tStart);
+      d.setDate(tStart.getDate() + i);
+      days.push(d);
+    }
+
+    const wMap: Record<string, { weekNum: number; days: Date[] }> = {};
+    days.forEach(day => {
+      const { week, year } = getWeekNumber(day);
+      const key = `W${week}-${year}`;
+      if (!wMap[key]) {
+        wMap[key] = { weekNum: week, days: [] };
+      }
+      wMap[key].days.push(day);
+    });
+
+    return { daysArray: days, weeksMap: wMap };
+  }, [timelineStart, totalDays]);
 
   const scrollToDate = (date: Date, behavior: ScrollBehavior = 'smooth') => {
     if (timelineContentRef.current) {
@@ -486,15 +524,34 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
     }
   };
 
-  // Automatically scroll to the active month when mounting or changing zoom level
+  // Single, unified scroll controller: triggers whenever timeline scope (timelineStart) or zoomLevel changes
   useEffect(() => {
-    const targetMonth = activeMonth !== null ? activeMonth : 0;
-    scrollToDate(new Date(activeYear, targetMonth, 1), 'auto');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [zoomLevel]);
+    if (isJumpingToSearchRef.current) return;
 
-  // Listen to scroll to update active month
+    const today = new Date();
+    const isTodayInActiveMonth = (activeYear === today.getFullYear() && (activeMonth === null || activeMonth === today.getMonth()));
+    const shouldScrollToToday = isJumpingToTodayRef.current || isTodayInActiveMonth;
+
+    if (isJumpingToTodayRef.current) {
+      isJumpingToTodayRef.current = false;
+    }
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (shouldScrollToToday) {
+          scrollToDate(today, 'smooth');
+        } else {
+          const targetMonth = activeMonth !== null ? activeMonth : 0;
+          scrollToDate(new Date(activeYear, targetMonth, 1), 'auto');
+        }
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timelineStart, zoomLevel]);
+
+  // Optimized scroll handler (runs without re-rendering during active month view)
   const handleScroll = () => {
+    if (activeMonth !== null) return; // Month is locked, no re-render needed during scroll
     if (timelineContentRef.current) {
       const scrollLeft = timelineContentRef.current.scrollLeft;
       const scrollDays = scrollLeft / dayWidth;
@@ -516,9 +573,143 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
 
   const handleScrollToToday = () => {
     const today = new Date();
-    setActiveMonth(today.getMonth());
-    scrollToDate(today, 'smooth');
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth();
+
+    isJumpingToSearchRef.current = false;
+    isJumpingToTodayRef.current = true;
+
+    if (activeYear !== currentYear || activeMonth !== currentMonth) {
+      setActiveYear(currentYear);
+      setActiveMonth(currentMonth);
+    } else {
+      scrollToDate(today, 'smooth');
+    }
   };
+
+  // Search matching logic across OPs, Lot numbers, Product names, Batch IDs, and Notes
+  const searchResults = React.useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const q = searchQuery.trim().toLowerCase();
+
+    const results: {
+      batch: Batch;
+      stepIndex: number;
+      step: ScheduledStep;
+      recipeName: string;
+    }[] = [];
+
+    batches.forEach(b => {
+      const recipe = recipes.find(r => r.id === b.productId);
+      const recipeName = recipe?.name || '';
+      const lotStr = (b.lotNumber || '').toLowerCase();
+      const idStr = (b.id || '').toLowerCase();
+      const prodStr = recipeName.toLowerCase();
+      const notesStr = (b.contaminationNotes || '').toLowerCase();
+      const reasonStr = (b.contaminationReason || '').toLowerCase();
+
+      b.steps.forEach((st, sIdx) => {
+        const opStr = (st.opNumber || '').toLowerCase();
+        const normAssetId = normalizeAssetId(st.assetId, envaseLinesCount);
+        const assetObj = fullAssetsList.find(a => normalizeAssetId(a.id, envaseLinesCount) === normAssetId);
+        const assetStr = (assetObj?.name || st.assetId || '').toLowerCase();
+        const scaleStr = (st.scaleType || '').toLowerCase();
+
+        if (
+          lotStr.includes(q) ||
+          opStr.includes(q) ||
+          idStr.includes(q) ||
+          prodStr.includes(q) ||
+          notesStr.includes(q) ||
+          reasonStr.includes(q) ||
+          assetStr.includes(q) ||
+          scaleStr.includes(q)
+        ) {
+          results.push({
+            batch: b,
+            stepIndex: sIdx,
+            step: st,
+            recipeName
+          });
+        }
+      });
+    });
+
+    return results;
+  }, [searchQuery, batches, recipes, fullAssetsList, envaseLinesCount]);
+
+  const [showSearchDropdown, setShowSearchDropdown] = useState<boolean>(false);
+
+  const handleJumpToMatch = (index: number) => {
+    if (searchResults.length === 0) return;
+    const matchIndex = (index + searchResults.length) % searchResults.length;
+    setCurrentMatchIndex(matchIndex);
+
+    const match = searchResults[matchIndex];
+    if (!match) return;
+
+    isJumpingToSearchRef.current = true;
+
+    // Ensure scale is visible if currently hidden
+    if (!visibleScales[match.step.scaleType]) {
+      setVisibleScales(prev => ({ ...prev, [match.step.scaleType]: true }));
+    }
+
+    const stepDate = new Date(match.step.startDateTime);
+
+    // Switch year if step is in a different year
+    if (stepDate.getFullYear() !== activeYear) {
+      setActiveYear(stepDate.getFullYear());
+    }
+
+    // Switch month if step is in a different month
+    if (activeMonth !== stepDate.getMonth()) {
+      setActiveMonth(stepDate.getMonth());
+    }
+
+    // Set pulse highlight
+    setHighlightedBatchId(match.batch.id);
+    setHighlightedStepIndex(match.stepIndex);
+
+    // Scroll directly to element and timestamp
+    setTimeout(() => {
+      scrollToDate(stepDate, 'smooth');
+
+      const stepBtnId = `gantt-step-block-${match.batch.id}-${match.stepIndex}`;
+      const stepEl = document.getElementById(stepBtnId);
+      if (stepEl) {
+        stepEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      } else {
+        const normAssetId = normalizeAssetId(match.step.assetId, envaseLinesCount);
+        const rowEl = document.getElementById(`gantt-asset-row-${normAssetId}`);
+        if (rowEl) {
+          rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }
+
+      setTimeout(() => {
+        isJumpingToSearchRef.current = false;
+      }, 600);
+    }, 200);
+  };
+
+  useEffect(() => {
+    if (searchQuery.trim()) {
+      setCurrentMatchIndex(0);
+      setShowSearchDropdown(true);
+      if (searchResults.length > 0) {
+        handleJumpToMatch(0);
+      } else {
+        setHighlightedBatchId(null);
+        setHighlightedStepIndex(null);
+      }
+    } else {
+      setShowSearchDropdown(false);
+      setHighlightedBatchId(null);
+      setHighlightedStepIndex(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery]);
 
   // Determine if today's date context is visible
   const isTodayVisible = now >= timelineStart && now <= timelineEnd;
@@ -530,47 +721,50 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
     todayLinePos = diffHours * hourWidth;
   }
 
-  // Calculate conflicts/collisions list caused by delay adjustments or manual scheduling
-  const conflictingStepsList: { batch: Batch; step: ScheduledStep; assetName: string; index: number }[] = [];
-  batches.forEach(b => {
-    b.steps.forEach((st, sIdx) => {
-      if (b.isContaminated && sIdx === b.contaminatedStepIndex) return; // ignore contamination freeze
+  // Calculate conflicts/collisions list caused by delay adjustments or manual scheduling (Memoized)
+  const conflictingStepsList = React.useMemo(() => {
+    const list: { batch: Batch; step: ScheduledStep; assetName: string; index: number }[] = [];
+    batches.forEach(b => {
+      b.steps.forEach((st, sIdx) => {
+        if (b.isContaminated && sIdx === b.contaminatedStepIndex) return; // ignore contamination freeze
 
-      const normAssetId = normalizeAssetId(st.assetId, envaseLinesCount);
-      const asset = assetsList.find(a => a.id === normAssetId);
-      const stepSetup = setupTimes[st.scaleType] || 0;
-      const s1 = new Date(st.startDateTime).getTime();
-      const e1 = new Date(st.endDateTime).getTime();
-      const e1Setup = e1 + stepSetup * 60 * 60 * 1000;
+        const normAssetId = normalizeAssetId(st.assetId, envaseLinesCount);
+        const asset = assetsList.find(a => a.id === normAssetId);
+        const stepSetup = setupTimes[st.scaleType] || 0;
+        const s1 = new Date(st.startDateTime).getTime();
+        const e1 = new Date(st.endDateTime).getTime();
+        const e1Setup = e1 + stepSetup * 60 * 60 * 1000;
 
-      const hasPrevOverlap = preventatives.some(p => 
-        normalizeAssetId(p.assetId, envaseLinesCount) === normAssetId && 
-        s1 < new Date(p.endDateTime).getTime() && 
-        new Date(p.startDateTime).getTime() < e1Setup
-      );
+        const hasPrevOverlap = preventatives.some(p => 
+          normalizeAssetId(p.assetId, envaseLinesCount) === normAssetId && 
+          s1 < new Date(p.endDateTime).getTime() && 
+          new Date(p.startDateTime).getTime() < e1Setup
+        );
 
-      const hasBatchOverlap = batches.some(ob => 
-        ob.id !== b.id && 
-        ob.steps.some(ost => {
-          if (normalizeAssetId(ost.assetId, envaseLinesCount) !== normAssetId) return false;
-          const s2 = new Date(ost.startDateTime).getTime();
-          const e2 = new Date(ost.endDateTime).getTime();
-          const setup2 = setupTimes[ost.scaleType] || 0;
-          const e2Setup = e2 + setup2 * 60 * 60 * 1000;
-          return s1 < e2Setup && s2 < e1Setup;
-        })
-      );
+        const hasBatchOverlap = batches.some(ob => 
+          ob.id !== b.id && 
+          ob.steps.some(ost => {
+            if (normalizeAssetId(ost.assetId, envaseLinesCount) !== normAssetId) return false;
+            const s2 = new Date(ost.startDateTime).getTime();
+            const e2 = new Date(ost.endDateTime).getTime();
+            const setup2 = setupTimes[ost.scaleType] || 0;
+            const e2Setup = e2 + setup2 * 60 * 60 * 1000;
+            return s1 < e2Setup && s2 < e1Setup;
+          })
+        );
 
-      if (hasPrevOverlap || hasBatchOverlap) {
-        conflictingStepsList.push({
-          batch: b,
-          step: st,
-          assetName: asset?.name || normAssetId,
-          index: sIdx
-        });
-      }
+        if (hasPrevOverlap || hasBatchOverlap) {
+          list.push({
+            batch: b,
+            step: st,
+            assetName: asset?.name || normAssetId,
+            index: sIdx
+          });
+        }
+      });
     });
-  });
+    return list;
+  }, [batches, preventatives, setupTimes, envaseLinesCount, assetsList]);
 
   // Dynamic suggestions for deviation reasons
   const delaySuggestions = Array.from(new Set([
@@ -626,49 +820,51 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
   ];
   const activeMonthLabel = activeMonth !== null ? MONTHS_LABEL_PT[activeMonth] : null;
 
-  // Compute per-product planned and unfeasible volume statistics for BOTH Active Month & Total Accumulated
-  const productVolumeSummary = recipes.map(recipe => {
-    const allProductBatches = batches.filter(b => b.productId === recipe.id);
-    
-    // Filter batches belonging to activeYear
-    const yearBatches = allProductBatches.filter(b => {
-      const mainStep = b.steps.find(s => s.scaleType === 'Envase') || b.steps[0];
-      if (!mainStep) return false;
-      const d = new Date(mainStep.startDateTime);
-      return d.getFullYear() === activeYear;
-    });
+  // Compute per-product planned and unfeasible volume statistics (Memoized for high performance)
+  const productVolumeSummary = React.useMemo(() => {
+    return recipes.map(recipe => {
+      const allProductBatches = batches.filter(b => b.productId === recipe.id);
+      
+      // Filter batches belonging to activeYear
+      const yearBatches = allProductBatches.filter(b => {
+        const mainStep = b.steps.find(s => s.scaleType === 'Envase') || b.steps[0];
+        if (!mainStep) return false;
+        const d = new Date(mainStep.startDateTime);
+        return d.getFullYear() === activeYear;
+      });
 
-    const totalAccumulatedBatchesCount = yearBatches.length;
-    const totalAccumulatedVolumeLiters = yearBatches.reduce((acc, b) => acc + getBatchYield(b, recipe, customAssets || envaseLinesCount), 0);
+      const totalAccumulatedBatchesCount = yearBatches.length;
+      const totalAccumulatedVolumeLiters = yearBatches.reduce((acc, b) => acc + getBatchYield(b, recipe, customAssets || envaseLinesCount), 0);
 
-    // Batches whose Envase (or start) falls in the currently active month of activeYear
-    const monthBatches = activeMonth !== null
-      ? yearBatches.filter(b => {
-          const envaseStep = b.steps.find(s => s.scaleType === 'Envase') || b.steps[b.steps.length - 1];
-          if (!envaseStep) return false;
-          const d = new Date(envaseStep.startDateTime);
-          return d.getMonth() === activeMonth;
-        })
-      : yearBatches;
+      // Batches whose Envase (or start) falls in the currently active month of activeYear
+      const monthBatches = activeMonth !== null
+        ? yearBatches.filter(b => {
+            const envaseStep = b.steps.find(s => s.scaleType === 'Envase') || b.steps[b.steps.length - 1];
+            if (!envaseStep) return false;
+            const d = new Date(envaseStep.startDateTime);
+            return d.getMonth() === activeMonth;
+          })
+        : yearBatches;
 
-    const monthBatchesCount = monthBatches.length;
-    const monthVolumeLiters = monthBatches.reduce((acc, b) => acc + getBatchYield(b, recipe, customAssets || envaseLinesCount), 0);
+      const monthBatchesCount = monthBatches.length;
+      const monthVolumeLiters = monthBatches.reduce((acc, b) => acc + getBatchYield(b, recipe, customAssets || envaseLinesCount), 0);
 
-    const productErrors = (planningErrors || []).filter(e => e.productId === recipe.id || e.productName === recipe.name);
-    const unfeasibleErrorCount = productErrors.filter(e => !e.canBypass).length;
-    const unfeasibleVolumeLiters = unfeasibleErrorCount * recipe.yieldPerBatch;
+      const productErrors = (planningErrors || []).filter(e => e.productId === recipe.id || e.productName === recipe.name);
+      const unfeasibleErrorCount = productErrors.filter(e => !e.canBypass).length;
+      const unfeasibleVolumeLiters = unfeasibleErrorCount * recipe.yieldPerBatch;
 
-    return {
-      recipe,
-      totalAccumulatedBatchesCount,
-      totalAccumulatedVolumeLiters,
-      monthBatchesCount,
-      monthVolumeLiters,
-      unfeasibleErrorCount,
-      unfeasibleVolumeLiters,
-      hasActivity: totalAccumulatedBatchesCount > 0 || unfeasibleErrorCount > 0
-    };
-  }).filter(item => item.hasActivity || batches.length === 0);
+      return {
+        recipe,
+        totalAccumulatedBatchesCount,
+        totalAccumulatedVolumeLiters,
+        monthBatchesCount,
+        monthVolumeLiters,
+        unfeasibleErrorCount,
+        unfeasibleVolumeLiters,
+        hasActivity: totalAccumulatedBatchesCount > 0 || unfeasibleErrorCount > 0
+      };
+    }).filter(item => item.hasActivity || batches.length === 0);
+  }, [recipes, batches, activeYear, activeMonth, customAssets, envaseLinesCount, planningErrors]);
 
   const totalAccumulatedVolumeAll = productVolumeSummary.reduce((sum, p) => sum + p.totalAccumulatedVolumeLiters, 0);
   const totalMonthVolumeAll = productVolumeSummary.reduce((sum, p) => sum + p.monthVolumeLiters, 0);
@@ -722,6 +918,126 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
 
         {/* Navigation panel */}
         <div className="flex flex-wrap items-center gap-3 justify-end">
+          {/* SEARCH BAR (Excel-like Localizador de Lote / OP) */}
+          <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl border border-slate-250 shrink-0 shadow-3xs">
+            <div className="relative flex items-center">
+              <Search size={14} className="absolute left-2.5 text-slate-400 pointer-events-none" />
+              <input
+                type="text"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    setSearchQuery(searchInput);
+                    if (e.shiftKey) handleJumpToMatch(currentMatchIndex - 1);
+                    else handleJumpToMatch(currentMatchIndex + 1);
+                  }
+                }}
+                placeholder="Pesquisar OP, Lote, Produto (ex: OP-1024)..."
+                className="pl-8 pr-7 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-semibold text-slate-800 focus:outline-none focus:border-indigo-500 w-44 sm:w-60"
+              />
+              {searchInput && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchInput('');
+                    setSearchQuery('');
+                    setHighlightedBatchId(null);
+                    setHighlightedStepIndex(null);
+                    setShowSearchDropdown(false);
+                  }}
+                  className="absolute right-2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                  title="Limpar pesquisa"
+                >
+                  <X size={12} />
+                </button>
+              )}
+
+              {/* Quick Search Matches Dropdown Menu */}
+              {searchQuery.trim() !== '' && showSearchDropdown && searchResults.length > 0 && (
+                <div className="absolute top-full left-0 mt-2 w-80 bg-white rounded-2xl border border-slate-200 shadow-2xl z-50 overflow-hidden animate-fadeIn">
+                  <div className="p-2.5 bg-slate-50 border-b border-slate-150 flex items-center justify-between text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">
+                    <span>Lotes Encontrados ({searchResults.length})</span>
+                    <button onClick={() => setShowSearchDropdown(false)} className="hover:text-slate-800 cursor-pointer p-0.5">
+                      <X size={12} />
+                    </button>
+                  </div>
+                  <div className="max-h-60 overflow-y-auto divide-y divide-slate-100">
+                    {searchResults.slice(0, 8).map((res, rIdx) => {
+                      const isCurrent = rIdx === currentMatchIndex;
+                      const stepStartFormatted = formatFullDate(res.step.startDateTime);
+                      const opTag = res.step.opNumber || res.batch.lotNumber;
+                      return (
+                        <button
+                          key={`${res.batch.id}-${res.stepIndex}`}
+                          type="button"
+                          onClick={() => {
+                            handleJumpToMatch(rIdx);
+                            setShowSearchDropdown(false);
+                          }}
+                          className={`w-full p-2.5 text-left flex items-start gap-2.5 transition-colors cursor-pointer ${
+                            isCurrent ? 'bg-indigo-50/90 font-bold border-l-4 border-indigo-600' : 'hover:bg-slate-50'
+                          }`}
+                        >
+                          <div className="p-1.5 bg-indigo-100 text-indigo-700 rounded-lg shrink-0 mt-0.5">
+                            <Search size={13} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="font-extrabold text-xs text-slate-800 font-mono truncate">{opTag}</span>
+                              <span className="text-[9px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded font-mono border border-slate-200 shrink-0">
+                                {res.step.scaleType}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-slate-600 truncate font-semibold mt-0.5">{res.recipeName}</p>
+                            <p className="text-[9px] text-slate-400 font-mono mt-0.5">📅 {stepStartFormatted}</p>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {searchQuery.trim() !== '' && (
+              <div className="flex items-center gap-1 text-[11px] font-bold text-slate-600 pl-1 pr-1">
+                {searchResults.length > 0 ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setShowSearchDropdown(!showSearchDropdown)}
+                      className="font-mono text-indigo-700 font-extrabold bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-150 whitespace-nowrap cursor-pointer hover:bg-indigo-100"
+                      title="Ver lista de resultados"
+                    >
+                      {currentMatchIndex + 1}/{searchResults.length}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleJumpToMatch(currentMatchIndex - 1)}
+                      className="p-1 hover:bg-slate-200 rounded text-slate-600 transition-colors cursor-pointer"
+                      title="Anterior (Shift + Enter)"
+                    >
+                      <ChevronLeft size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleJumpToMatch(currentMatchIndex + 1)}
+                      className="p-1 hover:bg-slate-200 rounded text-slate-600 transition-colors cursor-pointer"
+                      title="Próximo (Enter)"
+                    >
+                      <ChevronRight size={14} />
+                    </button>
+                  </>
+                ) : (
+                  <span className="text-rose-600 font-mono text-[10px] bg-rose-50 px-1.5 py-0.5 rounded border border-rose-150 whitespace-nowrap">
+                    0 resultados
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Zoom controls */}
           <div className="flex items-center gap-1 border-r border-slate-200 pr-3 mr-1">
             <span className="text-[10px] font-black text-slate-400 uppercase mr-1">Zoom:</span>
@@ -1077,7 +1393,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
             <div className="sticky top-0 z-20 bg-white border-b border-slate-200 shadow-2xs select-none" style={{ width: `${totalDays * dayWidth}px` }}>
               {/* Row 1: Weeks */}
               <div className="flex h-8 bg-slate-900 border-b border-slate-800">
-                {Object.entries(weeksMap).map(([key, value]) => {
+                {(Object.entries(weeksMap) as [string, { weekNum: number; days: Date[] }][]).map(([key, value]) => {
                   const width = value.days.length * dayWidth;
                   return (
                     <div
@@ -1165,9 +1481,11 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
 
               {/* Loop and draw batches & preventatives inside rows aligned with assetsList */}
               {assetsList.map((asset) => {
+                const normRowAssetId = normalizeAssetId(asset.id, envaseLinesCount);
                 return (
                   <div
                     key={asset.id}
+                    id={`gantt-asset-row-${normRowAssetId}`}
                     className="h-12 relative flex items-center z-0 group hover:bg-indigo-50/20 transition-colors cursor-crosshair"
                     onClick={(e) => {
                       if ((e.target as HTMLElement).closest('button')) return;
@@ -1279,11 +1597,17 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                             const isStepContaminated = batch.isContaminated && stepIdx === batch.contaminatedStepIndex;
                             const isStepColliding = !isStepContaminated && displayConflict;
 
+                            const isHighlightedMatch = highlightedBatchId === batch.id && highlightedStepIndex === stepIdx;
+
                             const calculatedBgClass = isStepContaminated
                               ? 'bg-slate-700 border-slate-900 text-slate-300'
                               : isStepColliding
                               ? 'bg-rose-600 border-rose-800 text-white animate-pulse'
                               : `${recipeColorOb.bg} ${recipeColorOb.border} text-white`;
+
+                            const highlightEffectClass = isHighlightedMatch
+                              ? 'ring-4 ring-red-500 border-2 border-red-600 shadow-2xl scale-105 z-40 animate-pulse'
+                              : 'hover:shadow hover:-translate-y-0.5 z-10';
 
                             const extraStyles: React.CSSProperties = {};
                             if (isStepContaminated) {
@@ -1297,6 +1621,7 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                             blocks.push(
                               <button
                                 key={`${batch.id}-${stepIdx}`}
+                                id={`gantt-step-block-${batch.id}-${stepIdx}`}
                                 onClick={() => setSelectedBlock({ 
                                   type: 'batch-step', 
                                   batch, 
@@ -1305,18 +1630,34 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
                                   asset
                                 })}
                                 title={`Lote ${batch.lotNumber} - ${recipe?.name || 'Bio-Lote'}\nEtapa: ${step.scaleType}\nInício (${stepIdx === 0 ? 'Inoculação' : 'Etapa'}): ${stepStartFull}\nPrevisão Término: ${stepEndFull}`}
-                                className={`absolute h-[38px] rounded border shadow-2xs hover:shadow hover:-translate-y-0.5 z-10 transition-all text-left px-2 py-1 flex flex-col justify-center cursor-pointer overflow-hidden ${calculatedBgClass}`}
+                                className={`absolute h-[38px] rounded border shadow-2xs transition-all text-left px-2 py-1 flex flex-col justify-center cursor-pointer overflow-visible ${calculatedBgClass} ${highlightEffectClass}`}
                                 style={{
                                   left: `${leftPx}px`,
                                   width: `${widthPx}px`,
                                   ...extraStyles
                                 }}
                               >
+                                {/* CÍRCULO VERMELHO PULSANTE DE ALTA VISIBILIDADE NA ORDEM ENCONTRADA */}
+                                {isHighlightedMatch && (
+                                  <div className="absolute -top-3 -right-2.5 z-50 pointer-events-none flex items-center justify-center">
+                                    <span className="relative flex h-6 w-6 items-center justify-center">
+                                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75"></span>
+                                      <span className="relative inline-flex rounded-full h-6 w-6 bg-red-600 border-2 border-white text-white items-center justify-center shadow-2xl font-black text-[10px]">
+                                        🔴
+                                      </span>
+                                    </span>
+                                  </div>
+                                )}
+
                                 <div className="flex items-center justify-between w-full gap-1">
                                   <span className="font-black text-[9px] tracking-tight leading-none font-mono truncate">
                                     [{step.durationHours}h] {batch.lotNumber} <span className="text-amber-300 font-extrabold ml-0.5">• {startTimeFormatted}</span>
                                   </span>
-                                  {isStepContaminated ? (
+                                  {isHighlightedMatch ? (
+                                    <span className="text-[8px] bg-red-600 text-white font-mono font-black px-1.5 py-0.2 rounded-full flex items-center gap-0.5 shadow-md animate-pulse shrink-0 border border-white">
+                                      🔴 ENCONTRADO
+                                    </span>
+                                  ) : isStepContaminated ? (
                                     <span className="text-[8px] bg-slate-950 text-rose-450 rounded font-bold px-1 select-none font-mono shrink-0">
                                       🚫 CONTAMINADO
                                     </span>
@@ -2224,3 +2565,5 @@ export default function GanttTimeline({ batches, preventatives, recipes, onDelet
     </div>
   );
 }
+
+export default React.memo(GanttTimeline);

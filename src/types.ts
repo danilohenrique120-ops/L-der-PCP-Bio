@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type ScaleType = 'Erlenmeyer' | 'Balão' | '100L' | '500L' | '3000_5000L' | 'Envase';
+export type ScaleType = 'Erlenmeyer' | 'Balão' | '100L' | '500L' | '3000L' | '5000L' | '3000_5000L' | 'Envase' | string;
 
 export interface StepDefinition {
   id: string;
@@ -19,6 +19,7 @@ export interface ProductRecipe {
   yield3kL?: number;     // Custom volume yielded when fermented in a 3kL reactor
   yield500L?: number;    // Custom volume yielded when fermented in a 500L reactor
   yield100L?: number;    // Custom volume yielded when fermented in a 100L reactor
+  finalStepIndex?: number; // Index of step that marks final line completion and yields volume
   steps: StepDefinition[];
   fermentationTimeHours?: number;
   cipSipTimeHours?: number;

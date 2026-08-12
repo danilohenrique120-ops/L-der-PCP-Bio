@@ -38,9 +38,21 @@ export function findFirstAvailableAsset(
   envaseLinesCount?: number
 ): { asset: Asset; hasConflict: boolean } {
   const envaseCount = envaseLinesCount || 3;
-  const compatibleAssets = getAssetsPool(envaseCount).filter(a => a.scaleType === scaleType);
+  let compatibleAssets = getAssetsPool(envaseCount).filter(a => {
+    if (a.scaleType === scaleType) return true;
+    if (scaleType === '3000L') return a.scaleType === '3000_5000L' && a.capacityLiters === 3000;
+    if (scaleType === '5000L') return a.scaleType === '3000_5000L' && (a.capacityLiters === 5000 || !a.capacityLiters);
+    if (scaleType === '3000_5000L') return a.scaleType === '3000_5000L';
+    return false;
+  });
+
   if (compatibleAssets.length === 0) {
-    throw new Error(`Nenhum ativo configurado para a escala: ${scaleType}`);
+    compatibleAssets = [{
+      id: `custom-${scaleType.toLowerCase().replace(/[^a-z0-9]/g, '-')}-0`,
+      name: `${scaleType} 01`,
+      scaleType: scaleType,
+      categoryLabel: scaleType
+    }];
   }
 
   const s1 = new Date(start).getTime();
