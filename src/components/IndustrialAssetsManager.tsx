@@ -5,7 +5,7 @@
 
 import React, { useState } from 'react';
 import { Asset, ScaleType, FactoryScaleCounts } from '../types';
-import { Edit3, Plus, Trash2, RotateCcw, Check, Sliders, Database, Layers, ShieldCheck, ChevronUp, ChevronDown } from 'lucide-react';
+import { Edit3, Plus, Trash2, RotateCcw, Check, Sliders, Database, Layers, ShieldCheck, ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface IndustrialAssetsManagerProps {
   assets: Asset[];
@@ -121,6 +121,21 @@ function IndustrialAssetsManager({
 
       setActiveScaleTab('3000_5000L');
     }
+  };
+
+  const handleMoveScaleTab = (scale: ScaleType, direction: 'left' | 'right') => {
+    const currentIndex = allScaleTypes.indexOf(scale);
+    if (currentIndex < 0) return;
+    const targetIndex = direction === 'left' ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex < 0 || targetIndex >= allScaleTypes.length) return;
+
+    const reorderedAll = [...allScaleTypes];
+    const temp = reorderedAll[currentIndex];
+    reorderedAll[currentIndex] = reorderedAll[targetIndex];
+    reorderedAll[targetIndex] = temp;
+
+    setCustomScalesList(reorderedAll.filter(s => !BASE_SCALE_TYPES.includes(s)));
+    localStorage.setItem('pcp_custom_scales_list', JSON.stringify(reorderedAll));
   };
 
   // New asset form
@@ -276,6 +291,27 @@ function IndustrialAssetsManager({
                     }`}>
                       {count}
                     </span>
+
+                    {isActive && (
+                      <div className="flex items-center gap-0.5 border-l border-slate-200 pl-1 ml-0.5">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleMoveScaleTab(scale, 'left'); }}
+                          className="p-0.5 text-slate-400 hover:text-indigo-600 hover:bg-slate-100 rounded transition-colors cursor-pointer"
+                          title="Mover aba para a esquerda (altera a ordem visual do Gantt)"
+                        >
+                          <ChevronLeft size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleMoveScaleTab(scale, 'right'); }}
+                          className="p-0.5 text-slate-400 hover:text-indigo-600 hover:bg-slate-100 rounded transition-colors cursor-pointer"
+                          title="Mover aba para a direita (altera a ordem visual do Gantt)"
+                        >
+                          <ChevronRight size={12} />
+                        </button>
+                      </div>
+                    )}
 
                     {isCustom && isActive && count === 0 && (
                       <button

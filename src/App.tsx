@@ -1136,7 +1136,10 @@ export default function App() {
               preventatives,
               shiftConfig,
               setupTimes,
-              envaseLinesCount
+              envaseLinesCount,
+              undefined,
+              undefined,
+              customAssets
             );
             
             let batchesToCount = result.scheduledBatches;
@@ -1347,7 +1350,10 @@ export default function App() {
         preventatives,
         shiftConfig,
         setupTimes,
-        envaseLinesCount
+        envaseLinesCount,
+        undefined,
+        undefined,
+        customAssets
       );
 
       let batchesToSave = result.scheduledBatches;

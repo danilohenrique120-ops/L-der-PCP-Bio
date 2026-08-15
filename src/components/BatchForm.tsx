@@ -108,7 +108,8 @@ export default function BatchForm({ recipes, existingBatches, preventatives, shi
       })(),
       undefined,
       setupTimes,
-      envaseLinesCount
+      envaseLinesCount,
+      customAssets
     );
 
     setPreviewSteps(computed);
@@ -198,7 +199,8 @@ export default function BatchForm({ recipes, existingBatches, preventatives, shi
       })(),
       undefined,
       setupTimes,
-      envaseLinesCount
+      envaseLinesCount,
+      customAssets
     );
 
     if (!result.success) {

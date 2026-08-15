@@ -67,26 +67,42 @@ function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDelet
   const getScaleSortWeight = (scaleType: string, capacity?: number, name?: string): number => {
     const sLower = scaleType.toLowerCase();
     const nLower = (name || '').toLowerCase();
+    const combined = `${sLower} ${nLower}`;
 
     if (sLower.includes('erlenmeyer') || nLower.includes('erlen')) return 10;
     if (sLower.includes('balão') || sLower.includes('balao') || nLower.includes('balão')) return 20;
     if (sLower.includes('envase') || nLower.includes('envase')) return 999900;
 
+    // 1. Check custom tab order from Mapeamento de Equipamentos
+    try {
+      const savedScalesOrder = localStorage.getItem('pcp_custom_scales_list');
+      if (savedScalesOrder) {
+        const orderArr: string[] = JSON.parse(savedScalesOrder);
+        const idx = orderArr.indexOf(scaleType);
+        if (idx >= 0) {
+          return 100 + (idx * 50);
+        }
+      }
+    } catch (e) {}
+
+    // 2. Capacity in Liters (100L -> 1100, 200L -> 1200, 500L -> 1500, 3000L -> 4000, 5000L -> 6000)
     if (capacity && capacity > 0) {
       return 1000 + capacity;
     }
 
-    const matchNum = (scaleType + ' ' + (name || '')).match(/(\d+)/);
+    const matchNum = combined.match(/(\d+)/);
     if (matchNum) {
       const parsedNum = parseInt(matchNum[1], 10);
-      if (!isNaN(parsedNum) && parsedNum > 0) return 1000 + parsedNum;
+      if (!isNaN(parsedNum) && parsedNum > 0) {
+        return 1000 + (parsedNum < 50 ? parsedNum * 100 : parsedNum);
+      }
     }
 
-    if (sLower.includes('100l')) return 1100;
-    if (sLower.includes('200l')) return 1200;
-    if (sLower.includes('500l')) return 1500;
-    if (sLower.includes('3000') || sLower.includes('3kl')) return 4000;
-    if (sLower.includes('5000') || sLower.includes('5kl')) return 6000;
+    if (combined.includes('100l') || combined.includes('100 l')) return 1100;
+    if (combined.includes('200l') || combined.includes('200 l') || combined.includes('200')) return 1200;
+    if (combined.includes('500l') || combined.includes('500 l')) return 1500;
+    if (combined.includes('3000') || combined.includes('3kl')) return 4000;
+    if (combined.includes('5000') || combined.includes('5kl')) return 6000;
 
     return 50000;
   };
