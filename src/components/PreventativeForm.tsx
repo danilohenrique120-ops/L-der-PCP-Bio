@@ -17,11 +17,23 @@ interface PreventativeFormProps {
 
 export default function PreventativeForm({ preventatives, onAddPreventative, onDeletePreventative, envaseLinesCount }: PreventativeFormProps) {
   const assetsList = getAssetsPool(envaseLinesCount);
+  // Helper to get today's date formatted as YYYY-MM-DD
+  const getTodayDateStr = (daysToAdd = 0) => {
+    const d = new Date();
+    if (daysToAdd > 0) {
+      d.setDate(d.getDate() + daysToAdd);
+    }
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
   const [assetId, setAssetId] = useState(assetsList[0].id);
   const [description, setDescription] = useState('CRONOGRAMA DE PREVENTIVA');
-  const [startDate, setStartDate] = useState('2026-06-05');
+  const [startDate, setStartDate] = useState(() => getTodayDateStr(0));
   const [startTime, setStartTime] = useState('08:00');
-  const [endDate, setEndDate] = useState('2026-06-07');
+  const [endDate, setEndDate] = useState(() => getTodayDateStr(1));
   const [endTime, setEndTime] = useState('18:00');
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -112,7 +124,17 @@ export default function PreventativeForm({ preventatives, onAddPreventative, onD
             {/* Start Date/Time */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block">Início Bloqueio</label>
+                <div className="flex justify-between items-center">
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block">Início Bloqueio</label>
+                  <button
+                    type="button"
+                    onClick={() => setStartDate(getTodayDateStr(0))}
+                    className="text-[10px] font-extrabold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded cursor-pointer transition-colors"
+                    title="Usar data de hoje"
+                  >
+                    📅 Hoje
+                  </button>
+                </div>
                 <input
                   type="date"
                   value={startDate}
@@ -137,7 +159,17 @@ export default function PreventativeForm({ preventatives, onAddPreventative, onD
             {/* End Date/Time */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block">Término Bloqueio</label>
+                <div className="flex justify-between items-center">
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider block">Término Bloqueio</label>
+                  <button
+                    type="button"
+                    onClick={() => setEndDate(getTodayDateStr(0))}
+                    className="text-[10px] font-extrabold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded cursor-pointer transition-colors"
+                    title="Usar data de hoje"
+                  >
+                    📅 Hoje
+                  </button>
+                </div>
                 <input
                   type="date"
                   value={endDate}

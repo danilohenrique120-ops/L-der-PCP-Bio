@@ -1306,32 +1306,11 @@ function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDelet
                   <button
                     type="button"
                     onClick={() => setVisibleScales(prev => ({ ...prev, [scale]: !prev[scale] }))}
-                    className={`px-2 py-1 text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1 ${scaleBadgeColor}`}
+                    className={`px-2.5 py-1 text-[10px] font-extrabold transition-all cursor-pointer flex items-center gap-1 ${scaleBadgeColor}`}
                     title={`Clique para alternar visibilidade da escala ${scale}`}
                   >
                     <span>{label}</span>
-                    <span className="px-1 py-0.2 bg-black/20 rounded text-[9px] font-mono font-black">{countVal}</span>
                   </button>
-                  {onUpdateScaleCount && (
-                    <div className="flex items-center bg-slate-100 border-l border-slate-300">
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); onUpdateScaleCount(scaleKey, -1); }}
-                        className="px-1.5 py-1 text-[11px] font-extrabold text-slate-600 hover:bg-rose-200 hover:text-rose-900 transition-colors cursor-pointer"
-                        title={`Remover 1 linha da escala ${scale}`}
-                      >
-                        -
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); onUpdateScaleCount(scaleKey, 1); }}
-                        className="px-1.5 py-1 text-[11px] font-extrabold text-slate-600 hover:bg-emerald-200 hover:text-emerald-900 transition-colors cursor-pointer border-l border-slate-200"
-                        title={`Adicionar +1 linha na escala ${scale}`}
-                      >
-                        +
-                      </button>
-                    </div>
-                  )}
                 </div>
               );
             })}

@@ -23,8 +23,27 @@ export default function BatchForm({ recipes, existingBatches, preventatives, shi
   const [selectedProductId, setSelectedProductId] = useState('');
   const [lotNumber, setLotNumber] = useState('');
   
-  // Set default start time to standard working hour
-  const [startDateStr, setStartDateStr] = useState('2026-06-05');
+  // Helper to get today's date formatted as YYYY-MM-DD
+  const getTodayDateStr = () => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  // Helper to format scale names consistently across the app
+  const getFormattedScaleName = (scaleType: string) => {
+    if (scaleType === '3000_5000L' || scaleType === '5000L') return 'Tanque 5.000L';
+    if (scaleType === '3000L') return 'Tanque 3.000L';
+    if (scaleType === '100L') return 'Biorreator 100L';
+    if (scaleType === '500L') return 'Biorreator 500L';
+    if (scaleType === 'Envase') return 'Linha de Envase';
+    return scaleType;
+  };
+
+  // Set default start time to today's date and standard working hour
+  const [startDateStr, setStartDateStr] = useState(() => getTodayDateStr());
   const [startTimeStr, setStartTimeStr] = useState('08:00');
   const [transferInterval, setTransferInterval] = useState(0);
 
@@ -32,6 +51,7 @@ export default function BatchForm({ recipes, existingBatches, preventatives, shi
   const [manualAllocations, setManualAllocations] = useState<Record<number, string>>({});
   const [previewSteps, setPreviewSteps] = useState<ScheduledStep[]>([]);
   const [allowOvertime, setAllowOvertime] = useState(false);
+  const [pendingShiftBypassBatch, setPendingShiftBypassBatch] = useState<Batch | null>(null);
   const [successMsg, setSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -100,34 +120,6 @@ export default function BatchForm({ recipes, existingBatches, preventatives, shi
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProductId, startDateStr, startTimeStr, transferInterval, selectedRecipe]);
-
-  // Handle triggering manual auto-allocator override
-  const handleAutoAllocate = () => {
-    setManualAllocations({});
-    // This will force the useEffect above to re-trigger or we can run calculation directly
-    if (selectedRecipe) {
-      const startISO = getInoculationDateTimeStr();
-      const computed = calculateProductionTimeline(
-        selectedRecipe,
-        startISO,
-        transferInterval,
-        existingBatches,
-        preventatives,
-        undefined,
-        undefined,
-        setupTimes,
-        envaseLinesCount
-      );
-      setPreviewSteps(computed);
-      
-      // Update manual allocations memory to track what was assigned
-      const newManuals: Record<number, string> = {};
-      computed.forEach((step, idx) => {
-        newManuals[idx] = step.assetId;
-      });
-      setManualAllocations(newManuals);
-    }
-  };
 
   // Check if a specific step asset placement has a conflict with other schedules/preventatives
   const checkStepConflict = (step: ScheduledStep, stepIdx: number) => {
@@ -241,6 +233,18 @@ export default function BatchForm({ recipes, existingBatches, preventatives, shi
       steps: finalSteps
     };
 
+    // Check if any step in finalSteps falls out of working shift hours
+    const hasOutOfShiftSteps = finalSteps.some(
+      s => !isDateTimeInWorkingHours(s.startDateTime, shiftConfig) || !isDateTimeInWorkingHours(s.endDateTime, shiftConfig)
+    );
+
+    if (hasOutOfShiftSteps && !allowOvertime) {
+      // Prompt Shift Bypass Authorization Modal
+      (newBatch as any).autoAdjAlert = autoAdjAlert;
+      setPendingShiftBypassBatch(newBatch);
+      return;
+    }
+
     onAddBatch(newBatch);
 
     setSuccessMsg(
@@ -252,6 +256,7 @@ export default function BatchForm({ recipes, existingBatches, preventatives, shi
     setLotNumber('');
     setManualAllocations({});
     setAllowOvertime(false);
+    setStartDateStr(getTodayDateStr());
   };
 
   return (
@@ -312,7 +317,17 @@ export default function BatchForm({ recipes, existingBatches, preventatives, shi
             {/* Inoculation Start Date/Time */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-widest block">Data Inoculação (Erlen)</label>
+                <div className="flex justify-between items-center">
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-widest block">Data Inoculação (Erlen)</label>
+                  <button
+                    type="button"
+                    onClick={() => setStartDateStr(getTodayDateStr())}
+                    className="text-[10px] font-extrabold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2 py-0.5 rounded cursor-pointer transition-colors"
+                    title="Usar data de hoje"
+                  >
+                    📅 Hoje
+                  </button>
+                </div>
                 <input
                   type="date"
                   value={startDateStr}
@@ -332,26 +347,6 @@ export default function BatchForm({ recipes, existingBatches, preventatives, shi
                   required
                 />
               </div>
-            </div>
-
-            {/* Transfer spacing in Hours */}
-            <div className="space-y-2">
-              <div className="flex justify-between items-center">
-                <label className="text-xs font-semibold text-slate-500 uppercase tracking-widest block">Intervalo de Transferência</label>
-                <span className="text-[10px] text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded font-bold font-mono">Configurável</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min="0"
-                  max="48"
-                  value={transferInterval}
-                  onChange={(e) => setTransferInterval(Math.max(0, parseInt(e.target.value) || 0))}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono font-medium focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-800 transition-shadow"
-                />
-                <span className="text-xs text-slate-500 min-w-[50px]">horas</span>
-              </div>
-              <p className="text-[10px] text-slate-400">Tempo de espera ou setup logístico após o término de um estágio antes de entrar no reator subsequente.</p>
             </div>
 
             {/* Toggle Hours Overtime */}
@@ -386,14 +381,6 @@ export default function BatchForm({ recipes, existingBatches, preventatives, shi
 
             {/* Action Buttons */}
             <div className="pt-2 flex flex-col gap-2">
-              <button
-                type="button"
-                onClick={handleAutoAllocate}
-                className="w-full flex items-center justify-center gap-1.5 py-2 px-4 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-medium text-xs rounded-lg border border-indigo-200 transition-all cursor-pointer"
-              >
-                <Shuffle size={14} /> Sugerir Ativos (Auto-Alocar)
-              </button>
-              
               <button
                 type="submit"
                 id="btn-schedule-batch"
@@ -442,8 +429,8 @@ export default function BatchForm({ recipes, existingBatches, preventatives, shi
                           <span className="w-5 h-5 flex items-center justify-center rounded-full bg-slate-200 text-slate-700 font-mono text-[10px] font-bold">
                             {idx + 1}
                           </span>
-                          <span className="text-xs font-bold text-slate-800">
-                            {step.scaleType === '3000_5000L' ? 'Tanque 3000L/5000L' : step.scaleType === 'Envase' ? 'Linha de Envase' : step.scaleType}
+                          <span className="text-xs font-extrabold text-slate-800">
+                            {getFormattedScaleName(selectedRecipe?.steps[idx]?.scaleType || step.scaleType)}
                           </span>
                           <span className="text-[10px] uppercase font-mono font-bold bg-slate-200/80 text-slate-600 px-1.5 py-0.5 rounded">
                             {step.durationHours}h
@@ -464,7 +451,7 @@ export default function BatchForm({ recipes, existingBatches, preventatives, shi
                               updated[idx].assetId = assetId;
                               setPreviewSteps(updated);
                             }}
-                            className="bg-white border border-slate-300 rounded px-1.5 py-1 text-xs font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-800 shrink-0"
+                            className="bg-white border border-slate-300 rounded px-1.5 py-1 text-xs font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-800 shrink-0 cursor-pointer"
                           >
                             {compatibleAssets.map(a => (
                               <option key={a.id} value={a.id}>
@@ -481,23 +468,23 @@ export default function BatchForm({ recipes, existingBatches, preventatives, shi
                           <div className="flex justify-between items-center mb-1">
                             <span className="text-slate-400 font-sans font-medium uppercase tracking-wider text-[9px]">Entrada / Inoculação</span>
                             {isDateTimeInWorkingHours(step.startDateTime, shiftConfig) ? (
-                              <span className="text-[8px] bg-emerald-150 text-emerald-800 font-sans font-bold px-1 rounded-sm border border-emerald-250">TURNO OK</span>
+                              <span className="text-[8px] bg-emerald-100 text-emerald-800 font-sans font-bold px-1.5 py-0.5 rounded border border-emerald-200">TURNO OK</span>
                             ) : (
-                              <span className="text-[8px] bg-rose-150 text-rose-800 font-sans font-bold px-1 rounded-sm border border-rose-250 animate-pulse">FORA DO TURNO</span>
+                              <span className="text-[8px] bg-rose-100 text-rose-800 font-sans font-bold px-1.5 py-0.5 rounded border border-rose-200">⚠️ FORA DO TURNO</span>
                             )}
                           </div>
-                          <p className="text-slate-700 font-semibold">{formatFullDate(step.startDateTime)}</p>
+                          <p className="text-slate-800 font-bold">{formatFullDate(step.startDateTime)}</p>
                         </div>
                         <div>
                           <div className="flex justify-between items-center mb-1">
                             <span className="text-slate-400 font-sans font-medium uppercase tracking-wider text-[9px]">Saída / Transferência</span>
                             {isDateTimeInWorkingHours(step.endDateTime, shiftConfig) ? (
-                              <span className="text-[8px] bg-emerald-150 text-emerald-800 font-sans font-bold px-1 rounded-sm border border-emerald-250">TURNO OK</span>
+                              <span className="text-[8px] bg-emerald-100 text-emerald-800 font-sans font-bold px-1.5 py-0.5 rounded border border-emerald-200">TURNO OK</span>
                             ) : (
-                              <span className="text-[8px] bg-rose-150 text-rose-800 font-sans font-bold px-1 rounded-sm border border-rose-250 animate-pulse">FORA DO TURNO</span>
+                              <span className="text-[8px] bg-rose-100 text-rose-800 font-sans font-bold px-1.5 py-0.5 rounded border border-rose-200">⚠️ FORA DO TURNO</span>
                             )}
                           </div>
-                          <p className="text-slate-700 font-semibold">{formatFullDate(step.endDateTime)}</p>
+                          <p className="text-slate-800 font-bold">{formatFullDate(step.endDateTime)}</p>
                         </div>
                       </div>
 
@@ -520,6 +507,61 @@ export default function BatchForm({ recipes, existingBatches, preventatives, shi
           )}
         </div>
       </div>
+
+      {/* MODAL DE CONFIRMAÇÃO DE BLOQUEIO / DESVIO DE TURNO */}
+      {pendingShiftBypassBatch && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fadeIn">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl p-6 w-full max-w-md space-y-4">
+            <div className="flex items-center gap-2 text-amber-600 border-b border-slate-100 pb-3">
+              <AlertTriangle size={20} />
+              <h3 className="font-extrabold text-slate-800 text-sm">Operação Fora do Turno Operacional</h3>
+            </div>
+
+            <div className="space-y-2 text-xs text-slate-600 leading-relaxed">
+              <p className="font-semibold text-slate-800">
+                Atenção: O lote <span className="font-mono font-bold text-indigo-600">{pendingShiftBypassBatch.lotNumber}</span> contém operações que ocorrem fora das horas/dias dos turnos cadastrados.
+              </p>
+              <div className="bg-amber-50 p-3 rounded-xl border border-amber-200/80 text-[11px] text-amber-900 space-y-1.5">
+                <p className="font-bold">Como deseja proceder com a alocação?</p>
+                <ul className="list-disc list-inside text-[10px] space-y-1 text-amber-800">
+                  <li><strong>Autorizar Horas Extras:</strong> Aloca o lote na data selecionada assumindo operação extraordinária.</li>
+                  <li><strong>Cancelar:</strong> Aborta o agendamento para você ajustar a data/horário ou marcar o checkbox "Autorizar Horas Extras".</li>
+                </ul>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setPendingShiftBypassBatch(null)}
+                className="px-3.5 py-2 border border-slate-200 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const b = pendingShiftBypassBatch;
+                  const alertMsg = (b as any).autoAdjAlert;
+                  setPendingShiftBypassBatch(null);
+                  onAddBatch(b);
+                  setSuccessMsg(
+                    `Lote ${b.lotNumber} programado com autorização de horas extras! ` + 
+                    (alertMsg ? `\n\n⚡ ${alertMsg}` : '')
+                  );
+                  setLotNumber('');
+                  setManualAllocations({});
+                  setAllowOvertime(false);
+                  setStartDateStr(getTodayDateStr());
+                }}
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-lg text-xs transition-colors cursor-pointer shadow-xs"
+              >
+                ⚡ Autorizar Horas Extras e Agendar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

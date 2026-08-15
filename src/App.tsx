@@ -205,10 +205,35 @@ export default function App() {
 
 
 
+  // Helper to get today's datetime formatted as YYYY-MM-DDTHH:mm
+  const getTodayDateTimeStr = (defaultHourStr = '08:00') => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}T${defaultHourStr}`;
+  };
+
   // Planner trigger inputs
   const [targetVolume, setTargetVolume] = useState<number>(15000);
   const [plannerRecipeId, setPlannerRecipeId] = useState<string>('');
-  const [plannerStart, setPlannerStart] = useState<string>('2026-06-01T08:00');
+  const [plannerStart, setPlannerStart] = useState<string>(() => getTodayDateTimeStr('08:00'));
+
+  // Ref to always hold the active database ID avoiding stale closures
+  const databaseIdRef = React.useRef(databaseId);
+  useEffect(() => {
+    databaseIdRef.current = databaseId;
+  }, [databaseId]);
+
+  const getActiveTenantDb = React.useCallback(() => {
+    const currentDbId = databaseIdRef.current || databaseId;
+    if (!currentDbId) return null;
+    try {
+      return getTenantDb(currentDbId);
+    } catch (e) {
+      return null;
+    }
+  }, [databaseId]);
 
   // Auth state listener on mounting
   useEffect(() => {
@@ -280,13 +305,15 @@ export default function App() {
       const devList = devSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as DeviationLog));
       setDeviations(devList);
 
-      // 5. Configs
+      // 5. Configs & Equipment
       const configDoc = await getDoc(doc(tenantDb, "configs", "settings"));
       if (configDoc.exists()) {
         const data = configDoc.data();
         if (data.shiftConfig) setShiftConfig(data.shiftConfig);
         if (data.setupTimes) setSetupTimes(data.setupTimes);
         if (data.envaseLinesCount !== undefined) setEnvaseLinesCount(data.envaseLinesCount);
+        if (data.scaleCounts) setScaleCounts(data.scaleCounts);
+        if (data.customAssets && Array.isArray(data.customAssets)) setCustomAssets(data.customAssets);
       } else {
         const defaultSettings = {
           shiftConfig: {
@@ -304,12 +331,16 @@ export default function App() {
             '3000_5000L': 8,
             'Envase': 4
           },
-          envaseLinesCount: 3
+          envaseLinesCount: 3,
+          scaleCounts: DEFAULT_SCALE_COUNTS,
+          customAssets: getAssetsPool(DEFAULT_SCALE_COUNTS)
         };
         await setDoc(doc(tenantDb, "configs", "settings"), defaultSettings);
         setShiftConfig(defaultSettings.shiftConfig);
         setSetupTimes(defaultSettings.setupTimes);
         setEnvaseLinesCount(defaultSettings.envaseLinesCount);
+        setScaleCounts(defaultSettings.scaleCounts);
+        setCustomAssets(defaultSettings.customAssets);
       }
 
       // 6. Capacity parameters
@@ -383,21 +414,26 @@ export default function App() {
 
   // Sync general settings to Firestore whenever they change
   useEffect(() => {
-    if (isDataLoaded && databaseId) {
-      const saveConfig = async () => {
-        try {
-          await setDoc(doc(getTenantDb(), "configs", "settings"), {
-            shiftConfig,
-            setupTimes,
-            envaseLinesCount
-          });
-        } catch (e) {
-          console.error("Erro ao salvar configs no Firestore:", e);
-        }
-      };
-      saveConfig();
+    if (isDataLoaded) {
+      const db = getActiveTenantDb();
+      if (db) {
+        const saveConfig = async () => {
+          try {
+            await setDoc(doc(db, "configs", "settings"), {
+              shiftConfig,
+              setupTimes,
+              envaseLinesCount,
+              scaleCounts,
+              customAssets
+            });
+          } catch (e) {
+            console.error("Erro ao salvar configs no Firestore:", e);
+          }
+        };
+        saveConfig();
+      }
     }
-  }, [shiftConfig, setupTimes, envaseLinesCount, isDataLoaded, databaseId]);
+  }, [shiftConfig, setupTimes, envaseLinesCount, scaleCounts, customAssets, isDataLoaded, getActiveTenantDb]);
 
   // Handle addition & deletion triggers synced to Firestore
   const handleSaveRecipe = async (updatedRecipe: ProductRecipe) => {
@@ -411,9 +447,11 @@ export default function App() {
         return [...prev, updatedRecipe];
       }
     });
-    if (databaseId) {
+
+    const db = getActiveTenantDb();
+    if (db) {
       try {
-        await setDoc(doc(getTenantDb(), "recipes", updatedRecipe.id), updatedRecipe);
+        await setDoc(doc(db, "recipes", updatedRecipe.id), updatedRecipe);
       } catch (err) {
         console.error("Erro ao salvar receita no Firestore:", err);
       }
@@ -423,9 +461,10 @@ export default function App() {
   const handleDeleteRecipe = async (id: string) => {
     setRecipes(prev => prev.filter(r => r.id !== id));
     setBatches(prev => prev.filter(b => b.productId !== id));
-    if (databaseId) {
+    
+    const db = getActiveTenantDb();
+    if (db) {
       try {
-        const db = getTenantDb();
         await deleteDoc(doc(db, "recipes", id));
         const batchesSnapshot = await getDocs(collection(db, "batches"));
         for (const docSnap of batchesSnapshot.docs) {
@@ -440,14 +479,14 @@ export default function App() {
     }
   };
 
-
-
   const handleAddBatch = async (newBatch: Batch) => {
     setBatches(prev => [newBatch, ...prev]);
     setActiveTab('gantt');
-    if (databaseId) {
+    
+    const db = getActiveTenantDb();
+    if (db) {
       try {
-        await setDoc(doc(getTenantDb(), "batches", newBatch.id), newBatch);
+        await setDoc(doc(db, "batches", newBatch.id), newBatch);
       } catch (err) {
         console.error("Erro ao adicionar lote no Firestore:", err);
       }
@@ -456,20 +495,22 @@ export default function App() {
 
   const handleDeleteBatch = React.useCallback(async (id: string) => {
     setBatches(prev => prev.filter(b => b.id !== id));
-    if (databaseId) {
+    const db = getActiveTenantDb();
+    if (db) {
       try {
-        await deleteDoc(doc(getTenantDb(), "batches", id));
+        await deleteDoc(doc(db, "batches", id));
       } catch (err) {
         console.error("Erro ao deletar lote no Firestore:", err);
       }
     }
-  }, [databaseId]);
+  }, [getActiveTenantDb]);
 
   const handleAddPreventative = async (newPrev: Preventative) => {
     setPreventatives(prev => [...prev, newPrev]);
-    if (databaseId) {
+    const db = getActiveTenantDb();
+    if (db) {
       try {
-        await setDoc(doc(getTenantDb(), "preventatives", newPrev.id), newPrev);
+        await setDoc(doc(db, "preventatives", newPrev.id), newPrev);
       } catch (err) {
         console.error("Erro ao adicionar preventiva no Firestore:", err);
       }
@@ -478,14 +519,15 @@ export default function App() {
 
   const handleDeletePreventative = React.useCallback(async (id: string) => {
     setPreventatives(prev => prev.filter(p => p.id !== id));
-    if (databaseId) {
+    const db = getActiveTenantDb();
+    if (db) {
       try {
-        await deleteDoc(doc(getTenantDb(), "preventatives", id));
+        await deleteDoc(doc(db, "preventatives", id));
       } catch (err) {
         console.error("Erro ao deletar preventiva no Firestore:", err);
       }
     }
-  }, [databaseId]);
+  }, [getActiveTenantDb]);
 
   const handleClearAllBatches = async () => {
     if (confirm('Atenção: Deseja deletar COMPLETAMENTE todos os lotes do cronograma corrente para uma replanificação do zero?')) {
@@ -900,20 +942,51 @@ export default function App() {
 
   const handleAddDeviationLog = React.useCallback(async (log: DeviationLog) => {
     setDeviations(prev => [log, ...prev]);
-    if (databaseId) {
+    const db = getActiveTenantDb();
+    if (db) {
       try {
-        await setDoc(doc(getTenantDb(), "deviations", log.id), log);
+        await setDoc(doc(db, "deviations", log.id), log);
       } catch (e) {
         console.error("Erro ao salvar desvio no Firestore:", e);
       }
     }
-  }, [databaseId]);
+  }, [getActiveTenantDb]);
+
+  const handleDeleteDeviation = React.useCallback(async (id: string) => {
+    setDeviations(prev => prev.filter(d => d.id !== id));
+    const db = getActiveTenantDb();
+    if (db) {
+      try {
+        await deleteDoc(doc(db, "deviations", id));
+      } catch (e) {
+        console.error("Erro ao deletar desvio no Firestore:", e);
+      }
+    }
+  }, [getActiveTenantDb]);
+
+  const handleClearAllDeviations = async () => {
+    if (confirm('Deseja realmente limpar permanentemente todo o histórico de desvios operacionais?')) {
+      setDeviations([]);
+      localStorage.removeItem('pcp_deviations');
+      const db = getActiveTenantDb();
+      if (db) {
+        try {
+          const devSnapshot = await getDocs(collection(db, "deviations"));
+          for (const docSnap of devSnapshot.docs) {
+            await deleteDoc(doc(db, "deviations", docSnap.id));
+          }
+        } catch (err) {
+          console.error("Erro ao limpar desvios no Firestore:", err);
+        }
+      }
+    }
+  };
 
   const handleUpdateBatches = React.useCallback(async (updatedBatches: Batch[]) => {
     setBatches(updatedBatches);
-    if (databaseId) {
+    const db = getActiveTenantDb();
+    if (db) {
       try {
-        const db = getTenantDb();
         for (const b of updatedBatches) {
           await setDoc(doc(db, "batches", b.id), b);
         }
@@ -921,7 +994,7 @@ export default function App() {
         console.error("Erro ao atualizar lotes no Firestore:", e);
       }
     }
-  }, [databaseId]);
+  }, [getActiveTenantDb]);
 
   const handleDeleteCampaignBatches = React.useCallback(async (productId: string | 'all', monthIndex: number | 'all') => {
     const batchesToDelete = batches.filter(b => {
@@ -1834,7 +1907,17 @@ export default function App() {
                       <div className="grid grid-cols-2 gap-4">
                         {/* Data inicial do plano */}
                         <div className="space-y-1.5 col-span-2 sm:col-span-1">
-                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Data Início da Campanha (Comum)</label>
+                          <div className="flex justify-between items-center">
+                            <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Data Início da Campanha (Comum)</label>
+                            <button
+                              type="button"
+                              onClick={() => setPlannerStart(getTodayDateTimeStr('08:00'))}
+                              className="text-[9px] font-extrabold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-1.5 py-0.5 rounded cursor-pointer transition-colors"
+                              title="Usar data de hoje"
+                            >
+                              📅 Hoje
+                            </button>
+                          </div>
                           <input
                             type="datetime-local"
                             value={plannerStart}
@@ -2058,7 +2141,17 @@ export default function App() {
                       <div className="grid grid-cols-2 gap-4">
                         {/* Data inicial do plano */}
                         <div className="space-y-1.5 col-span-2 sm:col-span-1">
-                          <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Data Início da Campanha</label>
+                          <div className="flex justify-between items-center">
+                            <label className="text-[10px] font-bold text-slate-450 uppercase tracking-widest block">Data Início da Campanha</label>
+                            <button
+                              type="button"
+                              onClick={() => setPlannerStart(getTodayDateTimeStr('08:00'))}
+                              className="text-[9px] font-extrabold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-1.5 py-0.5 rounded cursor-pointer transition-colors"
+                              title="Usar data de hoje"
+                            >
+                              📅 Hoje
+                            </button>
+                          </div>
                           <input
                             type="datetime-local"
                             value={plannerStart}
@@ -2394,12 +2487,7 @@ export default function App() {
                   </div>
                   {deviations.length > 0 && (
                     <button
-                      onClick={() => {
-                        if (confirm('Deseja realmente limpar permanentemente todo o histórico de desvios operacionais?')) {
-                          setDeviations([]);
-                          localStorage.removeItem('pcp_deviations');
-                        }
-                      }}
+                      onClick={handleClearAllDeviations}
                       className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-250 rounded-lg text-rose-600 text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
                     >
                       <Trash2 size={13} /> Limpar Ocorrências
@@ -2461,12 +2549,20 @@ export default function App() {
                               Lote de Produção: <strong className="text-slate-800">{dev.lotNumber}</strong> • Produto: <span className="font-bold">{dev.productName}</span>
                             </p>
 
-                          <div className="bg-slate-50/70 p-3 rounded-lg border border-slate-150 leading-relaxed text-slate-600 max-w-4xl text-[11px]">
+                            <div className="bg-slate-50/70 p-3 rounded-lg border border-slate-150 leading-relaxed text-slate-600 max-w-4xl text-[11px]">
                               {dev.notes}
                             </div>
                           </div>
 
                           <div className="shrink-0 flex md:flex-col items-end gap-1.5 text-right font-mono text-[9px] text-slate-400">
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteDeviation(dev.id)}
+                              className="px-2.5 py-1 text-rose-600 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 rounded-lg transition-colors cursor-pointer border border-rose-200 font-sans flex items-center gap-1 font-bold"
+                              title="Excluir este desvio"
+                            >
+                              <Trash2 size={12} /> Excluir
+                            </button>
                           </div>
                         </div>
                       );

@@ -55,6 +55,25 @@ export function findFirstAvailableAsset(
     }];
   }
 
+  // For Envase (and scales with multiple machines), sort assets by current workload (least used first)
+  // to distribute production across all mapped machines in parallel (Envase 1, 2, 3...)
+  if (compatibleAssets.length > 1) {
+    const usageMap: Record<string, number> = {};
+    compatibleAssets.forEach(a => { usageMap[a.id] = 0; });
+
+    for (const b of existingBatches) {
+      if (b.id === ignoreBatchId) continue;
+      for (const st of b.steps) {
+        const normId = normalizeAssetId(st.assetId, envaseCount);
+        if (usageMap[normId] !== undefined) {
+          usageMap[normId]++;
+        }
+      }
+    }
+
+    compatibleAssets.sort((a, b) => (usageMap[a.id] || 0) - (usageMap[b.id] || 0));
+  }
+
   const s1 = new Date(start).getTime();
   const e1 = new Date(end).getTime();
   const setup1 = setupTimes ? (setupTimes[scaleType] || 0) : 0;
