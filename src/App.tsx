@@ -657,7 +657,8 @@ export default function App() {
       setupTimes,
       envaseLinesCount,
       customOps,
-      prefix
+      prefix,
+      customAssets
     );
 
     let inShiftToSave = result.scheduledBatches;
@@ -804,7 +805,8 @@ export default function App() {
         setupTimes,
         envaseLinesCount,
         productCustomOps,
-        productPrefix
+        productPrefix,
+        customAssets
       );
 
       const totalScheduledForThisProduct = result.scheduledBatches.length + result.outOfShiftBatches.length;
@@ -913,7 +915,8 @@ export default function App() {
         undefined,
         undefined,
         setupTimes,
-        envaseLinesCount
+        envaseLinesCount,
+        customAssets
       );
 
       const newBatch: Batch = {

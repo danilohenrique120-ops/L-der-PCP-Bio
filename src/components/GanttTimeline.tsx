@@ -64,7 +64,43 @@ function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDelet
     localStorage.setItem('pcp_gantt_visible_scales', JSON.stringify(visibleScales));
   }, [visibleScales]);
 
-  const fullAssetsList = customAssets || getAssetsPool(scaleCounts || envaseLinesCount);
+  const getScaleSortWeight = (scaleType: string, capacity?: number, name?: string): number => {
+    const sLower = scaleType.toLowerCase();
+    const nLower = (name || '').toLowerCase();
+
+    if (sLower.includes('erlenmeyer') || nLower.includes('erlen')) return 10;
+    if (sLower.includes('balão') || sLower.includes('balao') || nLower.includes('balão')) return 20;
+    if (sLower.includes('envase') || nLower.includes('envase')) return 999900;
+
+    if (capacity && capacity > 0) {
+      return 1000 + capacity;
+    }
+
+    const matchNum = (scaleType + ' ' + (name || '')).match(/(\d+)/);
+    if (matchNum) {
+      const parsedNum = parseInt(matchNum[1], 10);
+      if (!isNaN(parsedNum) && parsedNum > 0) return 1000 + parsedNum;
+    }
+
+    if (sLower.includes('100l')) return 1100;
+    if (sLower.includes('200l')) return 1200;
+    if (sLower.includes('500l')) return 1500;
+    if (sLower.includes('3000') || sLower.includes('3kl')) return 4000;
+    if (sLower.includes('5000') || sLower.includes('5kl')) return 6000;
+
+    return 50000;
+  };
+
+  const rawAssets = customAssets || getAssetsPool(scaleCounts || envaseLinesCount);
+  const fullAssetsList = React.useMemo(() => {
+    return [...rawAssets].sort((a, b) => {
+      const wA = getScaleSortWeight(a.scaleType, a.capacityLiters, a.name);
+      const wB = getScaleSortWeight(b.scaleType, b.capacityLiters, b.name);
+      if (wA !== wB) return wA - wB;
+      return a.name.localeCompare(b.name, undefined, { numeric: true });
+    });
+  }, [rawAssets]);
+
   const assetsList = fullAssetsList.filter(asset => visibleScales[asset.scaleType] !== false);
 
   const [activeYear, setActiveYear] = useState<number>(() => {

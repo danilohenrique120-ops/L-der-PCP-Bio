@@ -35,14 +35,27 @@ export function findFirstAvailableAsset(
   preventatives: Preventative[],
   ignoreBatchId?: string,
   setupTimes?: Record<ScaleType, number>,
-  envaseLinesCount?: number
+  envaseLinesCount?: number,
+  customAssets?: Asset[]
 ): { asset: Asset; hasConflict: boolean } {
   const envaseCount = envaseLinesCount || 3;
-  let compatibleAssets = getAssetsPool(envaseCount).filter(a => {
+  const pool = (customAssets && customAssets.length > 0) ? customAssets : getAssetsPool(envaseCount);
+
+  let compatibleAssets = pool.filter(a => {
     if (a.scaleType === scaleType) return true;
     if (scaleType === '3000L') return a.scaleType === '3000_5000L' && a.capacityLiters === 3000;
     if (scaleType === '5000L') return a.scaleType === '3000_5000L' && (a.capacityLiters === 5000 || !a.capacityLiters);
     if (scaleType === '3000_5000L') return a.scaleType === '3000_5000L';
+
+    // Flexible matching for custom scale types or equipment names (e.g. "Biorreator 200L" vs "200L")
+    const sClean = scaleType.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const aTypeClean = a.scaleType.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const aNameClean = a.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    if (aTypeClean === sClean) return true;
+    if (sClean && (aNameClean.includes(sClean) || sClean.includes(aNameClean))) return true;
+    if (sClean && (aTypeClean.includes(sClean) || sClean.includes(aTypeClean))) return true;
+
     return false;
   });
 
@@ -138,7 +151,8 @@ export function calculateProductionTimeline(
   manualAllocations?: Record<string, string>, // stepIndex -> assetId
   ignoreBatchId?: string,
   setupTimes?: Record<ScaleType, number>,
-  envaseLinesCount?: number
+  envaseLinesCount?: number,
+  customAssets?: Asset[]
 ): ScheduledStep[] {
   const envaseCount = envaseLinesCount || 3;
   const steps: ScheduledStep[] = [];
@@ -165,7 +179,8 @@ export function calculateProductionTimeline(
         preventatives,
         ignoreBatchId,
         setupTimes,
-        envaseCount
+        envaseCount,
+        customAssets
       );
       finalAssetId = asset.id;
     }
@@ -390,6 +405,7 @@ export interface ScheduleAttemptResult {
   steps: ScheduledStep[];
   startDateTime: string;
   errorReason?: string;
+  shiftedHours?: number;
 }
 
 /**
@@ -401,7 +417,8 @@ export function checkStepsOverlap(
   preventatives: Preventative[],
   ignoreBatchId?: string,
   setupTimes?: Record<ScaleType, number>,
-  envaseLinesCount?: number
+  envaseLinesCount?: number,
+  customAssets?: Asset[]
 ): boolean {
   const envaseCount = envaseLinesCount || 3;
   for (const step of steps) {
@@ -451,7 +468,8 @@ export function tryScheduleBatchBackward(
   manualAllocations?: Record<string, string>,
   ignoreBatchId?: string,
   setupTimes?: Record<ScaleType, number>,
-  envaseLinesCount?: number
+  envaseLinesCount?: number,
+  customAssets?: Asset[]
 ): ScheduleAttemptResult {
   const envaseCount = envaseLinesCount || 3;
   const preferredStart = new Date(preferredStartStr);
@@ -469,11 +487,12 @@ export function tryScheduleBatchBackward(
         manualAllocations,
         ignoreBatchId,
         setupTimes,
-        envaseCount
+        envaseCount,
+        customAssets
       );
 
       const shiftVal = validateBatchShifts(steps, shiftConfig);
-      const hasOverlap = checkStepsOverlap(steps, existingBatches, preventatives, ignoreBatchId, setupTimes, envaseCount);
+      const hasOverlap = checkStepsOverlap(steps, existingBatches, preventatives, ignoreBatchId, setupTimes, envaseCount, customAssets);
 
       if (hasOverlap) {
         return { success: false, isPerfect: false, steps: [], reason: 'Conflito com outro lote ou preventiva.' };
@@ -501,13 +520,15 @@ export function tryScheduleBatchBackward(
       return {
         success: true,
         steps: preferredRes.steps,
-        startDateTime: preferredStartStr
+        startDateTime: preferredStartStr,
+        shiftedHours: 0
       };
     } else {
       bestFallback = {
         success: true,
         steps: preferredRes.steps,
         startDateTime: preferredStartStr,
+        shiftedHours: 0,
         errorReason: preferredRes.reason
       };
     }
@@ -524,13 +545,15 @@ export function tryScheduleBatchBackward(
         return {
           success: true,
           steps: res.steps,
-          startDateTime: testStart.toISOString()
+          startDateTime: testStart.toISOString(),
+          shiftedHours: hoursBack
         };
       } else if (!bestFallback) {
         bestFallback = {
           success: true,
           steps: res.steps,
           startDateTime: testStart.toISOString(),
+          shiftedHours: hoursBack,
           errorReason: res.reason
         };
       }
@@ -546,13 +569,15 @@ export function tryScheduleBatchBackward(
         return {
           success: true,
           steps: res.steps,
-          startDateTime: testStart.toISOString()
+          startDateTime: testStart.toISOString(),
+          shiftedHours: hoursForward
         };
       } else if (!bestFallback) {
         bestFallback = {
           success: true,
           steps: res.steps,
           startDateTime: testStart.toISOString(),
+          shiftedHours: hoursForward,
           errorReason: res.reason
         };
       }
@@ -567,7 +592,7 @@ export function tryScheduleBatchBackward(
     success: false,
     steps: [],
     startDateTime: preferredStartStr,
-    errorReason: `Falha ao programar lote devido a restrição de turnos ou colisão física. Detalhes: ${initialErrorReason}`
+    errorReason: initialErrorReason || 'Recursos industriais ocupados ou fora de turno.'
   };
 }
 
@@ -630,7 +655,8 @@ export function generateAutomaticPlanning(
   setupTimes?: Record<ScaleType, number>,
   envaseLinesCount?: number,
   customOpNumbers?: string[],
-  opPrefix?: string
+  opPrefix?: string,
+  customAssets?: Asset[]
 ): {
   scheduledBatches: Batch[];
   outOfShiftBatches: Batch[];
@@ -704,10 +730,11 @@ export function generateAutomaticPlanning(
           undefined,
           undefined,
           setupTimes,
-          envaseCount
+          envaseCount,
+          customAssets
         );
 
-        const hasOverlap = checkStepsOverlap(candidateSteps, activeBatchesPool, preventatives, undefined, setupTimes, envaseCount);
+        const hasOverlap = checkStepsOverlap(candidateSteps, activeBatchesPool, preventatives, undefined, setupTimes, envaseCount, customAssets);
         if (hasOverlap) {
           continue; // Physical collision -> try next hour
         }
