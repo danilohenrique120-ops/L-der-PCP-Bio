@@ -41,6 +41,29 @@ function IndustrialAssetsManager({
   const [editCapacity, setEditCapacity] = useState<number | undefined>(undefined);
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
 
+  // Custom tab labels state
+  const [customScaleLabels, setCustomScaleLabels] = useState<Record<ScaleType, string>>(() => {
+    const saved = localStorage.getItem('pcp_custom_scale_labels');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') return { ...SCALE_LABELS, ...parsed };
+      } catch (e) {}
+    }
+    return SCALE_LABELS;
+  });
+  const [editingTabScale, setEditingTabScale] = useState<ScaleType | null>(null);
+  const [editTabLabelInput, setEditTabLabelInput] = useState<string>('');
+
+  const handleSaveTabLabel = (scale: ScaleType) => {
+    const clean = editTabLabelInput.trim();
+    if (!clean) return;
+    const updated = { ...customScaleLabels, [scale]: clean };
+    setCustomScaleLabels(updated);
+    localStorage.setItem('pcp_custom_scale_labels', JSON.stringify(updated));
+    setEditingTabScale(null);
+  };
+
   // New asset form
   const [newName, setNewName] = useState('');
   const [newCapacity, setNewCapacity] = useState<number>(5000);
@@ -78,14 +101,14 @@ function IndustrialAssetsManager({
           <div>
             <div className="flex items-center gap-2">
               <h3 className="font-bold text-slate-800 text-xs sm:text-sm uppercase tracking-wider">
-                Mapeamento de Equipamentos & Nomenclatura da Planta (Multi-Cliente)
+                Mapeamento de Equipamentos & Nomenclatura da Planta
               </h3>
               <span className="hidden sm:inline-block px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-150 rounded-full text-[10px] font-black uppercase tracking-tight">
                 {assets.length} ativos
               </span>
             </div>
             <p className="text-[11px] sm:text-xs text-slate-500 font-medium mt-0.5">
-              Personalize nomes, códigos industriais (TAGs) e capacidades em Litros dos vasos de cada cliente.
+              Personalize nomes, códigos industriais (TAGs) e capacidades em Litros dos vasos da fábrica.
             </p>
           </div>
         </div>
@@ -131,24 +154,69 @@ function IndustrialAssetsManager({
               {SCALE_TYPES.map((scale) => {
                 const count = assets.filter(a => a.scaleType === scale).length;
                 const isActive = activeScaleTab === scale;
+                const labelText = customScaleLabels[scale] || SCALE_LABELS[scale];
+                const isEditingThisTab = editingTabScale === scale;
+
                 return (
-                  <button
+                  <div
                     key={scale}
-                    type="button"
-                    onClick={() => setActiveScaleTab(scale)}
-                    className={`px-3 py-2 text-xs font-bold rounded-t-xl transition-all cursor-pointer flex items-center gap-1.5 border-t border-x ${
+                    className={`px-3 py-2 text-xs font-bold rounded-t-xl transition-all flex items-center gap-1.5 border-t border-x ${
                       isActive
                         ? 'bg-white text-slate-900 border-slate-200 border-b-white -mb-px font-extrabold shadow-3xs'
                         : 'bg-slate-100/70 text-slate-500 border-transparent hover:bg-slate-150'
                     }`}
                   >
-                    <span>{SCALE_LABELS[scale]}</span>
+                    {isEditingThisTab ? (
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="text"
+                          value={editTabLabelInput}
+                          onChange={(e) => setEditTabLabelInput(e.target.value)}
+                          className="px-1.5 py-0.5 bg-white border border-indigo-400 rounded text-xs font-bold text-slate-900 w-32 focus:outline-none"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleSaveTabLabel(scale);
+                            if (e.key === 'Escape') setEditingTabScale(null);
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleSaveTabLabel(scale)}
+                          className="p-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 cursor-pointer"
+                          title="Salvar nome da aba"
+                        >
+                          <Check size={11} />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setActiveScaleTab(scale)}
+                        className="flex items-center gap-1.5 cursor-pointer text-left"
+                      >
+                        <span>{labelText}</span>
+                        {isActive && (
+                          <span
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingTabScale(scale);
+                              setEditTabLabelInput(labelText);
+                            }}
+                            className="p-0.5 text-slate-400 hover:text-indigo-600 rounded transition-colors cursor-pointer"
+                            title="Editar nome desta aba de escala"
+                          >
+                            <Edit3 size={11} />
+                          </span>
+                        )}
+                      </button>
+                    )}
+
                     <span className={`px-1.5 py-0.2 rounded text-[10px] font-mono ${
                       count > 0 ? (isActive ? 'bg-slate-900 text-white' : 'bg-slate-200 text-slate-700') : 'bg-rose-100 text-rose-700 font-extrabold'
                     }`}>
                       {count}
                     </span>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -178,15 +246,15 @@ function IndustrialAssetsManager({
 
             {/* Create new asset modal inline form */}
             {showAddForm && (
-              <form onSubmit={handleCreateAsset} className="p-4 bg-indigo-50/70 border border-indigo-200 rounded-xl space-y-3 animate-fadeIn">
-                <div className="flex items-center justify-between border-b border-indigo-200/60 pb-2">
-                  <span className="text-xs font-extrabold text-indigo-900 uppercase tracking-tight flex items-center gap-1">
-                    <Plus size={14} /> Novo Equipamento / Linha para {SCALE_LABELS[activeScaleTab]}
+              <form onSubmit={handleCreateAsset} className="p-4 bg-indigo-50/90 border border-indigo-200 rounded-xl space-y-3 animate-fadeIn shadow-xs">
+                <div className="flex items-center justify-between border-b border-indigo-200/80 pb-2">
+                  <span className="text-xs font-extrabold text-indigo-950 uppercase tracking-tight flex items-center gap-1">
+                    <Plus size={14} /> Novo Equipamento / Linha para {customScaleLabels[activeScaleTab] || SCALE_LABELS[activeScaleTab]}
                   </span>
                   <button
                     type="button"
                     onClick={() => setShowAddForm(false)}
-                    className="text-xs text-indigo-600 font-bold hover:text-indigo-900 cursor-pointer"
+                    className="text-xs text-indigo-700 font-bold hover:text-indigo-950 cursor-pointer"
                   >
                     Cancelar
                   </button>
@@ -194,37 +262,37 @@ function IndustrialAssetsManager({
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-tight block">Nome / Tag Industrial</label>
+                    <label className="text-[10px] font-bold text-slate-600 uppercase tracking-tight block">Nome / Tag Industrial</label>
                     <input
                       type="text"
                       value={newName}
                       onChange={(e) => setNewName(e.target.value)}
                       placeholder={activeScaleTab === '3000_5000L' ? 'Ex: Reator F-101 ou B17' : 'Ex: Linha Envase 4'}
-                      className="w-full mt-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded font-semibold text-xs text-slate-800"
+                      className="w-full mt-1 px-3 py-2 bg-white border border-slate-300 rounded-lg font-semibold text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
                       autoFocus
                     />
                   </div>
 
                   {(activeScaleTab === '3000_5000L' || activeScaleTab === '500L' || activeScaleTab === '100L') && (
                     <div>
-                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-tight block">Capacidade Útil (Litros)</label>
+                      <label className="text-[10px] font-bold text-slate-600 uppercase tracking-tight block">Capacidade Útil (Litros)</label>
                       <input
                         type="number"
                         min="1"
                         value={newCapacity}
                         onChange={(e) => setNewCapacity(parseInt(e.target.value) || 1000)}
-                        className="w-full mt-1 px-2.5 py-1.5 bg-white border border-slate-300 rounded font-mono font-bold text-xs text-slate-800"
+                        className="w-full mt-1 px-3 py-2 bg-white border border-slate-300 rounded-lg font-mono font-bold text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
                       />
                     </div>
                   )}
                 </div>
 
-                <div className="flex justify-end pt-1">
+                <div className="flex justify-end pt-2">
                   <button
                     type="submit"
-                    className="px-4 py-1.5 bg-indigo-650 hover:bg-indigo-750 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                    className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-black transition-all cursor-pointer shadow-md flex items-center gap-1.5 uppercase tracking-wider"
                   >
-                    Salvar Novo Equipamento
+                    <Check size={14} /> Salvar Novo Equipamento
                   </button>
                 </div>
               </form>
