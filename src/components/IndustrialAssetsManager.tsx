@@ -16,7 +16,7 @@ interface IndustrialAssetsManagerProps {
   onResetAssets: () => void;
 }
 
-const SCALE_LABELS: Record<ScaleType, string> = {
+const DEFAULT_SCALE_LABELS: Record<ScaleType, string> = {
   'Erlenmeyer': 'Rotas Erlenmeyer',
   'Balão': 'Rotas Balão',
   '100L': 'Biorreatores 100L',
@@ -25,7 +25,7 @@ const SCALE_LABELS: Record<ScaleType, string> = {
   'Envase': 'Linhas de Envase / Máquinas'
 };
 
-const SCALE_TYPES: ScaleType[] = ['Erlenmeyer', 'Balão', '100L', '500L', '3000_5000L', 'Envase'];
+const BASE_SCALE_TYPES: ScaleType[] = ['Erlenmeyer', 'Balão', '100L', '500L', '3000_5000L', 'Envase'];
 
 function IndustrialAssetsManager({
   assets,
@@ -41,19 +41,41 @@ function IndustrialAssetsManager({
   const [editCapacity, setEditCapacity] = useState<number | undefined>(undefined);
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
 
+  // Custom scales list state
+  const [customScalesList, setCustomScalesList] = useState<string[]>(() => {
+    const saved = localStorage.getItem('pcp_custom_scales_list');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) {}
+    }
+    return [];
+  });
+
+  const allScaleTypes: ScaleType[] = [
+    ...BASE_SCALE_TYPES,
+    ...customScalesList.filter(s => !BASE_SCALE_TYPES.includes(s as ScaleType)) as ScaleType[]
+  ];
+
   // Custom tab labels state
   const [customScaleLabels, setCustomScaleLabels] = useState<Record<ScaleType, string>>(() => {
     const saved = localStorage.getItem('pcp_custom_scale_labels');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (parsed && typeof parsed === 'object') return { ...SCALE_LABELS, ...parsed };
+        if (parsed && typeof parsed === 'object') return { ...DEFAULT_SCALE_LABELS, ...parsed };
       } catch (e) {}
     }
-    return SCALE_LABELS;
+    return DEFAULT_SCALE_LABELS;
   });
+
   const [editingTabScale, setEditingTabScale] = useState<ScaleType | null>(null);
   const [editTabLabelInput, setEditTabLabelInput] = useState<string>('');
+
+  // New scale tab creation state
+  const [showAddScaleModal, setShowAddScaleModal] = useState<boolean>(false);
+  const [newScaleTabName, setNewScaleTabName] = useState<string>('');
 
   const handleSaveTabLabel = (scale: ScaleType) => {
     const clean = editTabLabelInput.trim();
@@ -62,6 +84,43 @@ function IndustrialAssetsManager({
     setCustomScaleLabels(updated);
     localStorage.setItem('pcp_custom_scale_labels', JSON.stringify(updated));
     setEditingTabScale(null);
+  };
+
+  const handleCreateNewScaleTab = (e: React.FormEvent) => {
+    e.preventDefault();
+    const nameClean = newScaleTabName.trim();
+    if (!nameClean) return;
+
+    const key = nameClean;
+    if (!customScalesList.includes(key)) {
+      const updatedScales = [...customScalesList, key];
+      setCustomScalesList(updatedScales);
+      localStorage.setItem('pcp_custom_scales_list', JSON.stringify(updatedScales));
+    }
+
+    const updatedLabels = { ...customScaleLabels, [key]: nameClean };
+    setCustomScaleLabels(updatedLabels);
+    localStorage.setItem('pcp_custom_scale_labels', JSON.stringify(updatedLabels));
+
+    setActiveScaleTab(key as ScaleType);
+    setShowAddScaleModal(false);
+    setNewScaleTabName('');
+    setShowAddForm(true);
+  };
+
+  const handleDeleteCustomScaleTab = (scale: ScaleType) => {
+    if (confirm(`Deseja excluir a escala "${customScaleLabels[scale] || scale}"?`)) {
+      const updatedScales = customScalesList.filter(s => s !== scale);
+      setCustomScalesList(updatedScales);
+      localStorage.setItem('pcp_custom_scales_list', JSON.stringify(updatedScales));
+
+      const copyLabels = { ...customScaleLabels };
+      delete copyLabels[scale];
+      setCustomScaleLabels(copyLabels);
+      localStorage.setItem('pcp_custom_scale_labels', JSON.stringify(copyLabels));
+
+      setActiveScaleTab('3000_5000L');
+    }
   };
 
   // New asset form
@@ -150,12 +209,13 @@ function IndustrialAssetsManager({
         <>
           {/* Scale Type Tabs */}
           <div className="px-4 sm:px-5 pt-3.5 border-b border-slate-100 bg-slate-50/20">
-            <div className="flex flex-wrap gap-1.5">
-              {SCALE_TYPES.map((scale) => {
+            <div className="flex flex-wrap gap-1.5 items-center">
+              {allScaleTypes.map((scale) => {
                 const count = assets.filter(a => a.scaleType === scale).length;
                 const isActive = activeScaleTab === scale;
-                const labelText = customScaleLabels[scale] || SCALE_LABELS[scale];
+                const labelText = customScaleLabels[scale] || (DEFAULT_SCALE_LABELS[scale] || scale);
                 const isEditingThisTab = editingTabScale === scale;
+                const isCustom = !BASE_SCALE_TYPES.includes(scale);
 
                 return (
                   <div
@@ -216,11 +276,82 @@ function IndustrialAssetsManager({
                     }`}>
                       {count}
                     </span>
+
+                    {isCustom && isActive && count === 0 && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); handleDeleteCustomScaleTab(scale); }}
+                        className="p-0.5 text-rose-500 hover:text-rose-700 hover:bg-rose-100 rounded transition-colors cursor-pointer"
+                        title="Excluir esta aba personalizada"
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    )}
                   </div>
                 );
               })}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setNewScaleTabName('');
+                  setShowAddScaleModal(true);
+                }}
+                className="px-3 py-2 text-xs font-black text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-t-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-3xs ml-1"
+                title="Adicionar uma nova escala, reator ou rota para a planta"
+              >
+                <Plus size={13} />
+                <span>+ Nova Escala / Rota</span>
+              </button>
             </div>
           </div>
+
+          {/* Modal / Form for Add New Scale Tab */}
+          {showAddScaleModal && (
+            <form onSubmit={handleCreateNewScaleTab} className="mx-4 sm:mx-5 mt-4 p-4 bg-indigo-900 text-white rounded-xl space-y-3 animate-fadeIn shadow-lg">
+              <div className="flex items-center justify-between border-b border-indigo-700/60 pb-2">
+                <span className="text-xs font-black uppercase tracking-wider flex items-center gap-1.5 text-indigo-100">
+                  <Plus size={15} /> Cadastrar Nova Escala / Rota de Equipamento
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowAddScaleModal(false)}
+                  className="text-xs text-indigo-300 hover:text-white font-bold cursor-pointer"
+                >
+                  Cancelar
+                </button>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-indigo-200 uppercase tracking-tight block">Nome da Nova Escala (ex: Biorreatores 10.000L, Prefiltro, Rota C)</label>
+                <input
+                  type="text"
+                  value={newScaleTabName}
+                  onChange={(e) => setNewScaleTabName(e.target.value)}
+                  placeholder="Ex: Biorreatores 10.000L"
+                  className="w-full mt-1 px-3 py-2 bg-slate-950 border border-indigo-500 rounded-lg text-xs font-bold text-white focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  autoFocus
+                  required
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowAddScaleModal(false)}
+                  className="px-3 py-1.5 bg-indigo-800 hover:bg-indigo-700 text-indigo-100 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 rounded-lg text-xs font-extrabold transition-colors cursor-pointer shadow-sm flex items-center gap-1"
+                >
+                  <Check size={14} /> Criar Escala
+                </button>
+              </div>
+            </form>
+          )}
 
           {/* Tab Content */}
           <div className="p-4 sm:p-5 space-y-4">
@@ -249,7 +380,7 @@ function IndustrialAssetsManager({
               <form onSubmit={handleCreateAsset} className="p-4 bg-indigo-50/90 border border-indigo-200 rounded-xl space-y-3 animate-fadeIn shadow-xs">
                 <div className="flex items-center justify-between border-b border-indigo-200/80 pb-2">
                   <span className="text-xs font-extrabold text-indigo-950 uppercase tracking-tight flex items-center gap-1">
-                    <Plus size={14} /> Novo Equipamento / Linha para {customScaleLabels[activeScaleTab] || SCALE_LABELS[activeScaleTab]}
+                    <Plus size={14} /> Novo Equipamento / Linha para {customScaleLabels[activeScaleTab] || (DEFAULT_SCALE_LABELS[activeScaleTab] || activeScaleTab)}
                   </span>
                   <button
                     type="button"
