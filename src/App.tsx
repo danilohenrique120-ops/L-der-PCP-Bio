@@ -2406,6 +2406,7 @@ export default function App() {
               onAddBatch={handleAddBatch}
               envaseLinesCount={envaseLinesCount}
               setupTimes={setupTimes}
+              customAssets={customAssets}
             />
           )}
 
@@ -2424,6 +2425,7 @@ export default function App() {
               onAddPreventative={handleAddPreventative}
               onDeletePreventative={handleDeletePreventative}
               envaseLinesCount={envaseLinesCount}
+              customAssets={customAssets}
             />
           )}
 

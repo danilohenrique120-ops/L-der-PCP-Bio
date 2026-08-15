@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { ProductRecipe, Batch, Preventative, ScheduledStep, getAssetsPool, normalizeAssetId, ScaleType, ShiftConfig } from '../types';
+import { ProductRecipe, Batch, Preventative, ScheduledStep, getAssetsPool, normalizeAssetId, ScaleType, ShiftConfig, Asset } from '../types';
 import { calculateProductionTimeline, formatFullDate, areIntervalsOverlapping, tryScheduleBatchBackward, isDateTimeInWorkingHours, validateBatchShifts } from '../utils/timeline';
 import { Calendar, Play, Shuffle, CheckCircle, Clock, Info, AlertTriangle } from 'lucide-react';
 
@@ -16,10 +16,11 @@ interface BatchFormProps {
   onAddBatch: (batch: Batch) => void;
   envaseLinesCount: number;
   setupTimes: Record<ScaleType, number>;
+  customAssets?: Asset[];
 }
 
-export default function BatchForm({ recipes, existingBatches, preventatives, shiftConfig, onAddBatch, envaseLinesCount, setupTimes }: BatchFormProps) {
-  const assetsList = getAssetsPool(envaseLinesCount);
+export default function BatchForm({ recipes, existingBatches, preventatives, shiftConfig, onAddBatch, envaseLinesCount, setupTimes, customAssets }: BatchFormProps) {
+  const assetsList = customAssets && customAssets.length > 0 ? customAssets : getAssetsPool(envaseLinesCount);
   const [selectedProductId, setSelectedProductId] = useState('');
   const [lotNumber, setLotNumber] = useState('');
   

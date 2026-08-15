@@ -4,7 +4,7 @@
  */
 
 import React, { useState } from 'react';
-import { Preventative, getAssetsPool, normalizeAssetId } from '../types';
+import { Preventative, getAssetsPool, normalizeAssetId, Asset } from '../types';
 import { formatFullDate } from '../utils/timeline';
 import { ShieldX, Trash2, CalendarCheck, HelpCircle } from 'lucide-react';
 
@@ -13,10 +13,11 @@ interface PreventativeFormProps {
   onAddPreventative: (prev: Preventative) => void;
   onDeletePreventative: (id: string) => void;
   envaseLinesCount: number;
+  customAssets?: Asset[];
 }
 
-export default function PreventativeForm({ preventatives, onAddPreventative, onDeletePreventative, envaseLinesCount }: PreventativeFormProps) {
-  const assetsList = getAssetsPool(envaseLinesCount);
+export default function PreventativeForm({ preventatives, onAddPreventative, onDeletePreventative, envaseLinesCount, customAssets }: PreventativeFormProps) {
+  const assetsList = customAssets && customAssets.length > 0 ? customAssets : getAssetsPool(envaseLinesCount);
   // Helper to get today's date formatted as YYYY-MM-DD
   const getTodayDateStr = (daysToAdd = 0) => {
     const d = new Date();
