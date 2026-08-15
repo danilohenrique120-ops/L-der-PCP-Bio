@@ -292,27 +292,6 @@ function IndustrialAssetsManager({
                       {count}
                     </span>
 
-                    {isActive && (
-                      <div className="flex items-center gap-0.5 border-l border-slate-200 pl-1 ml-0.5">
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); handleMoveScaleTab(scale, 'left'); }}
-                          className="p-0.5 text-slate-400 hover:text-indigo-600 hover:bg-slate-100 rounded transition-colors cursor-pointer"
-                          title="Mover aba para a esquerda (altera a ordem visual do Gantt)"
-                        >
-                          <ChevronLeft size={12} />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); handleMoveScaleTab(scale, 'right'); }}
-                          className="p-0.5 text-slate-400 hover:text-indigo-600 hover:bg-slate-100 rounded transition-colors cursor-pointer"
-                          title="Mover aba para a direita (altera a ordem visual do Gantt)"
-                        >
-                          <ChevronRight size={12} />
-                        </button>
-                      </div>
-                    )}
-
                     {isCustom && isActive && count === 0 && (
                       <button
                         type="button"

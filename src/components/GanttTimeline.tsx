@@ -65,46 +65,32 @@ function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDelet
   }, [visibleScales]);
 
   const getScaleSortWeight = (scaleType: string, capacity?: number, name?: string): number => {
-    const sLower = scaleType.toLowerCase();
+    const sLower = (scaleType || '').toLowerCase();
     const nLower = (name || '').toLowerCase();
-    const combined = `${sLower} ${nLower}`;
 
-    if (sLower.includes('erlenmeyer') || nLower.includes('erlen')) return 10;
+    // 1. Inoculum Routes
+    if (sLower.includes('erlenmeyer') || sLower.includes('erlen') || nLower.includes('erlen')) return 10;
     if (sLower.includes('balão') || sLower.includes('balao') || nLower.includes('balão')) return 20;
+
+    // 2. Envase Packaging Lines (always last)
     if (sLower.includes('envase') || nLower.includes('envase')) return 999900;
 
-    // 1. Check custom tab order from Mapeamento de Equipamentos
-    try {
-      const savedScalesOrder = localStorage.getItem('pcp_custom_scales_list');
-      if (savedScalesOrder) {
-        const orderArr: string[] = JSON.parse(savedScalesOrder);
-        const idx = orderArr.indexOf(scaleType);
-        if (idx >= 0) {
-          return 100 + (idx * 50);
-        }
-      }
-    } catch (e) {}
+    // 3. Exact Category Matches
+    if (sLower === '100l' || sLower.includes('100l') || sLower.includes('100 l')) return 100;
+    if (sLower.includes('200l') || sLower.includes('200 l') || sLower.includes('200') || nLower.includes('200l') || nLower.includes('200 l')) return 200;
+    if (sLower === '500l' || sLower.includes('500l') || sLower.includes('500 l')) return 500;
+    if (sLower === '3000_5000l' || sLower.includes('3000') || sLower.includes('5000') || sLower.includes('3k') || sLower.includes('5k')) return 5000;
 
-    // 2. Capacity in Liters (100L -> 1100, 200L -> 1200, 500L -> 1500, 3000L -> 4000, 5000L -> 6000)
-    if (capacity && capacity > 0) {
-      return 1000 + capacity;
-    }
+    // 4. Capacity Fallback
+    if (capacity && capacity > 0) return capacity;
 
-    const matchNum = combined.match(/(\d+)/);
+    const matchNum = sLower.match(/(\d+)\s*l/i) || sLower.match(/(\d+)/);
     if (matchNum) {
-      const parsedNum = parseInt(matchNum[1], 10);
-      if (!isNaN(parsedNum) && parsedNum > 0) {
-        return 1000 + (parsedNum < 50 ? parsedNum * 100 : parsedNum);
-      }
+      const num = parseInt(matchNum[1], 10);
+      if (!isNaN(num) && num > 0) return num;
     }
 
-    if (combined.includes('100l') || combined.includes('100 l')) return 1100;
-    if (combined.includes('200l') || combined.includes('200 l') || combined.includes('200')) return 1200;
-    if (combined.includes('500l') || combined.includes('500 l')) return 1500;
-    if (combined.includes('3000') || combined.includes('3kl')) return 4000;
-    if (combined.includes('5000') || combined.includes('5kl')) return 6000;
-
-    return 50000;
+    return 10000;
   };
 
   const rawAssets = customAssets || getAssetsPool(scaleCounts || envaseLinesCount);
