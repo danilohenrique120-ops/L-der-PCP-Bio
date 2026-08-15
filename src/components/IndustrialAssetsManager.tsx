@@ -382,6 +382,10 @@ function IndustrialAssetsManager({
                   if (activeScaleTab === '3000_5000L') setNewCapacity(5000);
                   else if (activeScaleTab === '500L') setNewCapacity(500);
                   else if (activeScaleTab === '100L') setNewCapacity(100);
+                  else {
+                    const match = activeScaleTab.match(/(\d+)/);
+                    setNewCapacity(match ? parseInt(match[1], 10) : 1000);
+                  }
                   setShowAddForm(true);
                 }}
                 className="flex items-center gap-1 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-3xs"
@@ -419,14 +423,14 @@ function IndustrialAssetsManager({
                     />
                   </div>
 
-                  {(activeScaleTab === '3000_5000L' || activeScaleTab === '500L' || activeScaleTab === '100L') && (
+                  {activeScaleTab !== 'Erlenmeyer' && activeScaleTab !== 'Balão' && (
                     <div>
                       <label className="text-[10px] font-bold text-slate-600 uppercase tracking-tight block">Capacidade Útil (Litros)</label>
                       <input
                         type="number"
                         min="1"
-                        value={newCapacity}
-                        onChange={(e) => setNewCapacity(parseInt(e.target.value) || 1000)}
+                        value={newCapacity || ''}
+                        onChange={(e) => setNewCapacity(parseInt(e.target.value) || 0)}
                         className="w-full mt-1 px-3 py-2 bg-white border border-slate-300 rounded-lg font-mono font-bold text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/20"
                       />
                     </div>
@@ -476,7 +480,7 @@ function IndustrialAssetsManager({
                           placeholder="Nome / Tag do vaso"
                         />
                       </div>
-                      {(activeScaleTab === '3000_5000L' || activeScaleTab === '500L' || activeScaleTab === '100L') && (
+                      {activeScaleTab !== 'Erlenmeyer' && activeScaleTab !== 'Balão' && (
                         <div className="flex items-center gap-2 text-xs">
                           <span className="text-[10px] font-bold text-slate-500 uppercase">Capacidade:</span>
                           <input
