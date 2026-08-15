@@ -65,7 +65,7 @@ function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDelet
   }, [visibleScales]);
 
   const fullAssetsList = customAssets || getAssetsPool(scaleCounts || envaseLinesCount);
-  const assetsList = fullAssetsList.filter(asset => visibleScales[asset.scaleType]);
+  const assetsList = fullAssetsList.filter(asset => visibleScales[asset.scaleType] !== false);
 
   const [activeYear, setActiveYear] = useState<number>(() => {
     const saved = localStorage.getItem('pcp_gantt_active_year');
@@ -1280,20 +1280,14 @@ function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDelet
             <span className="text-[9px] font-black uppercase text-slate-400 tracking-wider flex items-center gap-1 mr-1">
               <Eye size={12} /> Ajustar Equipamentos / Escalas:
             </span>
-            {(['Erlenmeyer', 'Balão', '100L', '500L', '3000_5000L', 'Envase'] as ScaleType[]).map((scale) => {
-              const active = visibleScales[scale];
+            {Array.from(new Set([
+              'Erlenmeyer', 'Balão', '100L', '500L', '3000_5000L', 'Envase',
+              ...fullAssetsList.map(a => a.scaleType)
+            ])).map((scale) => {
+              const active = visibleScales[scale] !== false;
               let label = scale === '3000_5000L' ? 'Tanques 5kL' : scale === 'Envase' ? 'Envase' : scale;
-              let scaleKey: keyof FactoryScaleCounts = 'envaseCount';
-              if (scale === 'Erlenmeyer') scaleKey = 'erlenmeyerCount';
-              else if (scale === 'Balão') scaleKey = 'balaoCount';
-              else if (scale === '100L') scaleKey = 'b100LCount';
-              else if (scale === '500L') scaleKey = 'b500LCount';
-              else if (scale === '3000_5000L') scaleKey = 'b5kLCount';
-              else if (scale === 'Envase') scaleKey = 'envaseCount';
 
-              const countVal = scaleCounts ? scaleCounts[scaleKey] : (scale === 'Envase' ? envaseLinesCount : 5);
-
-              let scaleBadgeColor = '';
+              let scaleBadgeColor = active ? 'bg-indigo-900 text-indigo-100 border-indigo-800' : 'bg-slate-100 text-slate-400 border-slate-200';
               if (scale === 'Erlenmeyer') scaleBadgeColor = active ? 'bg-teal-900 text-teal-100 border-teal-850' : 'bg-slate-100 text-slate-400 border-slate-200';
               else if (scale === 'Balão') scaleBadgeColor = active ? 'bg-sky-900 text-sky-100 border-sky-850' : 'bg-slate-100 text-slate-400 border-slate-200';
               else if (scale === '100L') scaleBadgeColor = active ? 'bg-orange-950 text-orange-100 border-orange-850' : 'bg-slate-100 text-slate-400 border-slate-200';
@@ -1305,7 +1299,7 @@ function GanttTimeline({ batches, preventatives, recipes, onDeleteBatch, onDelet
                 <div key={scale} className="flex items-center rounded-lg border border-slate-300 overflow-hidden shadow-2xs">
                   <button
                     type="button"
-                    onClick={() => setVisibleScales(prev => ({ ...prev, [scale]: !prev[scale] }))}
+                    onClick={() => setVisibleScales(prev => ({ ...prev, [scale]: visibleScales[scale] === false ? true : false }))}
                     className={`px-2.5 py-1 text-[10px] font-extrabold transition-all cursor-pointer flex items-center gap-1 ${scaleBadgeColor}`}
                     title={`Clique para alternar visibilidade da escala ${scale}`}
                   >

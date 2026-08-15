@@ -366,15 +366,24 @@ export default function ProductForm({ recipes, onSaveRecipe, onDeleteRecipe, cus
                             ))}
                           </optgroup>
                           
-                          {customScales.length > 0 && (
-                            <optgroup label="Escalas Personalizadas do Cliente">
-                              {customScales.map(cs => (
-                                <option key={cs} value={cs}>
-                                  {cs}
-                                </option>
-                              ))}
-                            </optgroup>
-                          )}
+                          {(() => {
+                            const allCustom = Array.from(new Set([
+                              ...customScales,
+                              ...(customAssets ? customAssets.map(a => a.scaleType) : [])
+                            ])).filter(cs => !['Erlenmeyer', 'Balão', '100L', '500L', '3000L', '5000L', '3000_5000L', 'Envase'].includes(cs));
+
+                            if (allCustom.length === 0) return null;
+
+                            return (
+                              <optgroup label="Escalas Personalizadas da Fábrica">
+                                {allCustom.map(cs => (
+                                  <option key={cs} value={cs}>
+                                    {cs}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            );
+                          })()}
 
                           <option value="__ADD_NEW_CUSTOM_SCALE__" className="font-extrabold text-indigo-600 bg-indigo-50">
                             + Outros (Adicionar Nova Escala/Equipamento)...
