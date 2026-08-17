@@ -667,17 +667,20 @@ export function generateAutomaticPlanning(
   const outOfShiftBatches: Batch[] = [];
   const errors: PlanningErrorLog[] = [];
   
-  const batchesNeeded = Math.ceil(targetVolume / recipe.yieldPerBatch);
-  if (batchesNeeded <= 0) {
+  const initialEstimate = Math.ceil(targetVolume / recipe.yieldPerBatch);
+  if (initialEstimate <= 0) {
     return { scheduledBatches, outOfShiftBatches, errors: [] };
   }
 
   // Create active pool copying existing schedule
   const activeBatchesPool = [...existingBatches];
-
   const scanLimitHours = 1080; // 45 days search window
 
-  for (let lotIdx = 0; lotIdx < batchesNeeded; lotIdx++) {
+  let currentRealVolume = 0;
+  let lotIdx = 0;
+  const maxSafetyBatches = Math.max(initialEstimate * 2, initialEstimate + 25);
+
+  while (currentRealVolume < targetVolume && lotIdx < maxSafetyBatches) {
     let lotNumber = `${recipe.name.substring(0, 3).toUpperCase()}-L${String(1000 + lotIdx + 1).substring(1)}`;
 
     if (customOpNumbers && customOpNumbers[lotIdx]) {
@@ -779,6 +782,7 @@ export function generateAutomaticPlanning(
 
       scheduledBatches.push(newBatch);
       activeBatchesPool.push(newBatch);
+      currentRealVolume += getBatchYield(newBatch, recipe, customAssets || envaseCount);
     } else {
       const chosenSteps = foundFlexibleSteps.length > 0 ? foundFlexibleSteps : foundBypassSteps;
       const chosenStart = foundFlexibleStart || foundBypassStart;
@@ -796,6 +800,7 @@ export function generateAutomaticPlanning(
 
         outOfShiftBatches.push(newBatch);
         activeBatchesPool.push(newBatch);
+        currentRealVolume += getBatchYield(newBatch, recipe, customAssets || envaseCount);
 
         const isFlex = foundFlexibleStart && chosenStart === foundFlexibleStart;
         errors.push({
@@ -817,8 +822,11 @@ export function generateAutomaticPlanning(
           reason: `Lote ${lotNumber} totalmente inviabilizado: Sem reatores ou rota física livre no período analisado (incluindo setup).`,
           canBypass: false
         });
+        currentRealVolume += recipe.yieldPerBatch; // Advance count on unfeasible batch to avoid infinite loop
       }
     }
+
+    lotIdx++;
   }
 
   return {
@@ -862,7 +870,8 @@ export function findBestStartTimes(
   shiftConfig: ShiftConfig,
   setupTimes: Record<ScaleType, number>,
   envaseLinesCount: number,
-  restrictToMonth: boolean
+  restrictToMonth: boolean,
+  customAssets?: Asset[]
 ): StartTimeSuggestion[] {
   const suggestions: StartTimeSuggestion[] = [];
   const targetMonthStartMs = new Date(year, monthIndex, 1, 0, 0, 0).getTime();
@@ -931,7 +940,7 @@ export function findBestStartTimes(
         });
       }
 
-      const itemScheduledVol = batchesToCount.length * item.recipe.yieldPerBatch;
+      const itemScheduledVol = batchesToCount.reduce((acc, b) => acc + getBatchYield(b, item.recipe, customAssets || envaseLinesCount), 0);
       productDetails.push({
         recipeId: item.recipe.id,
         recipeName: item.recipe.name,
