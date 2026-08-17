@@ -19,8 +19,9 @@ const DEFAULT_SCALE_OPTIONS: { value: string; label: string }[] = [
   { value: 'Balão', label: 'Balão' },
   { value: '100L', label: 'Biorreator 100L' },
   { value: '500L', label: 'Biorreator 500L' },
-  { value: '3000L', label: 'Tanque 3.000L' },
-  { value: '5000L', label: 'Tanque 5.000L' },
+  { value: '5000L', label: 'Tanque 5.000L (Apenas Reatores de 5kL: B11 a B14)' },
+  { value: '3000L', label: 'Tanque 3.000L (Apenas Reatores de 3kL: B15 e B16)' },
+  { value: '3000_5000L', label: 'Tanques 3kL / 5kL Flexível (Qualquer Reator B11 a B16)' },
   { value: 'Envase', label: 'Linha de Envase' }
 ];
 
