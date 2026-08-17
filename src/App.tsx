@@ -1465,13 +1465,15 @@ export default function App() {
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 antialiased" id="login-root">
         <div className="w-full max-w-md bg-slate-800/80 border border-slate-707/60 rounded-3xl p-8 shadow-2xl backdrop-blur-md space-y-6">
           <div className="text-center space-y-2">
-            <div className="w-14 h-14 rounded-2xl bg-amber-500 flex items-center justify-center font-bold text-slate-950 text-2xl tracking-tight shadow mx-auto mb-4 animate-pulse">
-              𝝗
+            <img src="/logo.svg" alt="Líder PCP Bio" className="w-16 h-16 mx-auto mb-3 filter drop-shadow-lg" />
+            <div className="flex items-center justify-center gap-1.5">
+              <span className="text-2xl font-black text-white tracking-tight">Líder PCP</span>
+              <span className="text-2xl font-black bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent tracking-wider">BIO</span>
             </div>
-            <span className="text-[10px] font-black uppercase tracking-widest text-amber-500 block leading-none">
-              Líder PCP Bio - Enterprise
+            <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400/90 block leading-none">
+              Gestão de Bioprocessos - Enterprise
             </span>
-            <h2 className="text-xl font-extrabold text-white tracking-tight">
+            <h2 className="text-sm font-bold text-slate-300 tracking-tight pt-2">
               Acesso ao Sistema
             </h2>
             <p className="text-xs text-slate-400">
@@ -1555,14 +1557,13 @@ export default function App() {
       <header className="bg-slate-900 border-b border-slate-800 shrink-0 shadow-lg text-white">
         <div className="w-full px-4 py-4 md:px-6 flex flex-col md:flex-row justify-between items-center gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-amber-500 flex items-center justify-center font-bold text-slate-950 text-xl tracking-tight shadow">
-              𝝗
-            </div>
+            <img src="/logo.svg" alt="Líder PCP Bio" className="w-11 h-11 shrink-0 filter drop-shadow-md" />
             <div>
-              <span className="text-[10px] font-black uppercase tracking-widest text-amber-500 block leading-none">
-                Líder PCP Bio - Enterprise
-              </span>
-              <h1 className="text-lg font-extrabold tracking-tight">
+              <div className="flex items-center gap-1.5 leading-none mb-1">
+                <span className="text-base font-black text-white tracking-tight">Líder PCP</span>
+                <span className="text-base font-black bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent tracking-wider">BIO</span>
+              </div>
+              <h1 className="text-xs font-semibold text-slate-400 tracking-tight">
                 Sequenciador de Multiplicação Bacteriana
               </h1>
             </div>
