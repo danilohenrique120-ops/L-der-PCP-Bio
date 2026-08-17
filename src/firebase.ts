@@ -1,6 +1,6 @@
 import { initializeApp, getApp, getApps } from "firebase/app";
 import { getAuth } from "firebase/auth";
-import { initializeFirestore, Firestore } from "firebase/firestore";
+import { initializeFirestore, getFirestore, Firestore } from "firebase/firestore";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBLhjjpa69UbjZyNHg3U8XXxCed4qV1HJY",
@@ -12,20 +12,38 @@ const firebaseConfig = {
   measurementId: "G-ZRKHSSXF6M"
 };
 
-// Initialize Firebase
+// Initialize Firebase App & Auth
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 const auth = getAuth(app);
 
-let activeDb: Firestore | null = null;
+// Global cache for tenant Firestore instances to avoid already-initialized errors
+const dbCache = new Map<string, Firestore>();
 
 export function getTenantDb(databaseId?: string): Firestore {
-  if (databaseId) {
-    activeDb = initializeFirestore(app, {}, databaseId);
+  const dbId = databaseId || "(default)";
+  
+  if (dbCache.has(dbId)) {
+    return dbCache.get(dbId)!;
   }
-  if (!activeDb) {
-    throw new Error("Banco de dados do inquilino não inicializado.");
+
+  try {
+    const db = dbId === "(default)" || dbId === "default" 
+      ? getFirestore(app)
+      : getFirestore(app, dbId);
+    dbCache.set(dbId, db);
+    return db;
+  } catch (e) {
+    try {
+      const db = initializeFirestore(app, {}, dbId);
+      dbCache.set(dbId, db);
+      return db;
+    } catch (err) {
+      console.error("Erro ao inicializar Firestore para databaseId:", dbId, err);
+      const fallbackDb = getFirestore(app);
+      dbCache.set(dbId, fallbackDb);
+      return fallbackDb;
+    }
   }
-  return activeDb;
 }
 
 export { app, auth };

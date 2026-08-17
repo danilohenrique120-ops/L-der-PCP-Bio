@@ -437,6 +437,8 @@ export default function App() {
 
   // Handle addition & deletion triggers synced to Firestore
   const handleSaveRecipe = async (updatedRecipe: ProductRecipe) => {
+    const cleanRecipe = JSON.parse(JSON.stringify(updatedRecipe));
+
     setRecipes(prev => {
       const idx = prev.findIndex(r => r.id === updatedRecipe.id);
       if (idx >= 0) {
@@ -451,9 +453,10 @@ export default function App() {
     const db = getActiveTenantDb();
     if (db) {
       try {
-        await setDoc(doc(db, "recipes", updatedRecipe.id), updatedRecipe);
-      } catch (err) {
+        await setDoc(doc(db, "recipes", updatedRecipe.id), cleanRecipe);
+      } catch (err: any) {
         console.error("Erro ao salvar receita no Firestore:", err);
+        alert(`Atenção: Não foi possível salvar a receita na nuvem. Motivo: ${err.message || 'Erro de permissão ou conexão'}`);
       }
     }
   };
@@ -480,13 +483,14 @@ export default function App() {
   };
 
   const handleAddBatch = async (newBatch: Batch) => {
+    const cleanBatch = JSON.parse(JSON.stringify(newBatch));
     setBatches(prev => [newBatch, ...prev]);
     setActiveTab('gantt');
     
     const db = getActiveTenantDb();
     if (db) {
       try {
-        await setDoc(doc(db, "batches", newBatch.id), newBatch);
+        await setDoc(doc(db, "batches", newBatch.id), cleanBatch);
       } catch (err) {
         console.error("Erro ao adicionar lote no Firestore:", err);
       }
@@ -506,11 +510,12 @@ export default function App() {
   }, [getActiveTenantDb]);
 
   const handleAddPreventative = async (newPrev: Preventative) => {
+    const cleanPrev = JSON.parse(JSON.stringify(newPrev));
     setPreventatives(prev => [...prev, newPrev]);
     const db = getActiveTenantDb();
     if (db) {
       try {
-        await setDoc(doc(db, "preventatives", newPrev.id), newPrev);
+        await setDoc(doc(db, "preventatives", newPrev.id), cleanPrev);
       } catch (err) {
         console.error("Erro ao adicionar preventiva no Firestore:", err);
       }
@@ -944,11 +949,12 @@ export default function App() {
   };
 
   const handleAddDeviationLog = React.useCallback(async (log: DeviationLog) => {
+    const cleanLog = JSON.parse(JSON.stringify(log));
     setDeviations(prev => [log, ...prev]);
     const db = getActiveTenantDb();
     if (db) {
       try {
-        await setDoc(doc(db, "deviations", log.id), log);
+        await setDoc(doc(db, "deviations", log.id), cleanLog);
       } catch (e) {
         console.error("Erro ao salvar desvio no Firestore:", e);
       }
